@@ -42,3 +42,6 @@ wps_screenshot.png
 agent/screenshots/
 agent/security_logs/
 agent/agent.log
+
+# 归档目录
+archive/
