@@ -1,0 +1,116 @@
+[
+  {
+    "timestamp": "2026-09-19T17:10:08.156713",
+    "action": "click",
+    "target": {
+      "x": 100,
+      "y": 100
+    },
+    "text": null,
+    "keys": null,
+    "success": null
+  },
+  {
+    "timestamp": "2026-09-19T17:10:08.157603",
+    "action": "key",
+    "target": null,
+    "text": null,
+    "keys": [
+      "alt",
+      "f4"
+    ],
+    "success": null
+  },
+  {
+    "timestamp": "2026-09-19T17:10:08.158708",
+    "action": "click",
+    "target": {
+      "x": 100,
+      "y": 100
+    },
+    "text": null,
+    "keys": null,
+    "success": true
+  },
+  {
+    "timestamp": "2026-09-19T17:10:08.484223",
+    "action": "wait",
+    "target": null,
+    "text": null,
+    "keys": null,
+    "success": null
+  },
+  {
+    "timestamp": "2026-09-19T17:10:12.568870",
+    "action": "type",
+    "target": null,
+    "text": "测试",
+    "keys": null,
+    "success": null
+  },
+  {
+    "timestamp": "2026-09-19T17:10:12.903353",
+    "action": "done",
+    "target": null,
+    "text": null,
+    "keys": null,
+    "success": null
+  },
+  {
+    "timestamp": "2026-09-19T18:53:20.137783",
+    "action": "click",
+    "target": {
+      "x": 100,
+      "y": 100
+    },
+    "text": null,
+    "keys": null,
+    "success": null
+  },
+  {
+    "timestamp": "2026-09-19T18:53:20.138889",
+    "action": "key",
+    "target": null,
+    "text": null,
+    "keys": [
+      "alt",
+      "f4"
+    ],
+    "success": null
+  },
+  {
+    "timestamp": "2026-09-19T18:53:20.140014",
+    "action": "click",
+    "target": {
+      "x": 100,
+      "y": 100
+    },
+    "text": null,
+    "keys": null,
+    "success": true
+  },
+  {
+    "timestamp": "2026-09-19T18:53:23.939036",
+    "action": "wait",
+    "target": null,
+    "text": null,
+    "keys": null,
+    "success": null
+  },
+  {
+    "timestamp": "2026-09-19T18:53:48.433523",
+    "action": "type",
+    "target": null,
+    "text": "测试",
+    "keys": null,
+    "success": null
+  },
+  {
+    "timestamp": "2026-09-19T18:53:52.161015",
+    "action": "done",
+    "target": null,
+    "text": null,
+    "keys": null,
+    "success": null
+  }
+]

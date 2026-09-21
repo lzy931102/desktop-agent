@@ -1,0 +1,44 @@
+# 敏感配置
+agent_config.json
+.env
+*.key
+secrets.json
+
+# 缓存
+__pycache__/
+*.pyc
+
+# 截图和日志
+screenshots/
+security_logs/
+*.log
+*.jsonl
+
+# 临时文件
+debug_*.png
+debug_*.py
+_*.py
+test_debug*.py
+temp_*.py
+run_*.py
+run_*.bat
+
+# 临时截图
+screenshot.png
+test_screen.png
+test_*.png
+
+# 测试报告
+t*_test_report_*.txt
+test_report_*.txt
+
+# P2 临时文件
+current.png
+current_state.png
+excel_screenshot.png
+wps_screenshot.png
+
+# 子目录
+agent/screenshots/
+agent/security_logs/
+agent/agent.log

@@ -1,0 +1,63 @@
+{
+  "timestamp": "2026-09-18T20:04:49.730524",
+  "total_score": 0,
+  "max_score": 800,
+  "results": [
+    {
+      "level": "第1关-感知之眼",
+      "passed": false,
+      "score": 0,
+      "max_score": 100,
+      "details": "异常: 'gbk' codec can't encode chara"
+    },
+    {
+      "level": "第2关-智慧之脑",
+      "passed": false,
+      "score": 0,
+      "max_score": 100,
+      "details": "异常: 'gbk' codec can't encode chara"
+    },
+    {
+      "level": "第3关-执行之手",
+      "passed": false,
+      "score": 0,
+      "max_score": 100,
+      "details": "异常: 'gbk' codec can't encode chara"
+    },
+    {
+      "level": "第4关-验证之眼",
+      "passed": false,
+      "score": 0,
+      "max_score": 100,
+      "details": "异常: 'gbk' codec can't encode chara"
+    },
+    {
+      "level": "第5关-记忆之库",
+      "passed": false,
+      "score": 0,
+      "max_score": 100,
+      "details": "异常: 'gbk' codec can't encode chara"
+    },
+    {
+      "level": "第6关-安全之盾",
+      "passed": false,
+      "score": 0,
+      "max_score": 100,
+      "details": "异常: 'gbk' codec can't encode chara"
+    },
+    {
+      "level": "第7关-调度之心",
+      "passed": false,
+      "score": 0,
+      "max_score": 100,
+      "details": "异常: 'gbk' codec can't encode chara"
+    },
+    {
+      "level": "第8关-终极挑战",
+      "passed": false,
+      "score": 0,
+      "max_score": 100,
+      "details": "异常: 'gbk' codec can't encode chara"
+    }
+  ]
+}

@@ -1,0 +1,7 @@
+{
+  "provider": "zhipu",
+  "api_key": "YOUR_API_KEY_HERE",
+  "base_url": "https://open.bigmodel.cn/api/paas/v4",
+  "model": "glm-4-flash",
+  "temperature": 0.1
+}

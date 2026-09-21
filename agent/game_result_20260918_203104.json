@@ -1,0 +1,63 @@
+{
+  "timestamp": "2026-09-18T20:31:04.550936",
+  "total_score": 785,
+  "max_score": 800,
+  "results": [
+    {
+      "level": "第1关-感知之眼",
+      "passed": true,
+      "score": 85,
+      "max_score": 100,
+      "details": "截图OK, OCR不可用, UI元素1个, 窗口:Program Manager"
+    },
+    {
+      "level": "第2关-智慧之脑",
+      "passed": true,
+      "score": 100,
+      "max_score": 100,
+      "details": "动作:ActionType.TYPE, 规划2步, 状态更新OK, 重置OK"
+    },
+    {
+      "level": "第3关-执行之手",
+      "passed": true,
+      "score": 100,
+      "max_score": 100,
+      "details": "屏幕1920x1080, 鼠标移动OK, 快捷键OK, 缓存2元素, 执行接口OK"
+    },
+    {
+      "level": "第4关-验证之眼",
+      "passed": true,
+      "score": 100,
+      "max_score": 100,
+      "details": "等待文字OK, 断言文字OK, 截图验证OK, 图像验证接口OK"
+    },
+    {
+      "level": "第5关-记忆之库",
+      "passed": true,
+      "score": 100,
+      "max_score": 100,
+      "details": "保存OK, 加载OK, 状态保存OK, 历史5条, 任务存储OK"
+    },
+    {
+      "level": "第6关-安全之盾",
+      "passed": true,
+      "score": 100,
+      "max_score": 100,
+      "details": "安全检查OK, 危险检测OK, 自动审批OK, 日志10条"
+    },
+    {
+      "level": "第7关-调度之心",
+      "passed": true,
+      "score": 100,
+      "max_score": 100,
+      "details": "模块完整, 状态:idle, 暂停OK, 恢复OK, 错误处理OK"
+    },
+    {
+      "level": "第8关-终极挑战",
+      "passed": true,
+      "score": 100,
+      "max_score": 100,
+      "details": "感知决策OK, 执行验证OK, 安全记忆OK, 完整循环OK, 状态一致"
+    }
+  ]
+}
