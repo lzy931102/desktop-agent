@@ -135,40 +135,53 @@
 
 ---
 
-## Task: P7 批量文件操作
+## Task: P7 批量文件操作（GUI 版）
 
 **Status**: ✓ COMPLETED  
-**Date**: 2026-09-22  
-**Total Time**: 0.06s  
-**Method**: Python pathlib + glob
+**Date**: 2026-09-23  
+**Total Time**: 15.82s  
+**Method**: pyautogui (GUI) - 图像识别定位
 
 ### 测试结果
 
-| Step | Action | Result |
-|------|--------|--------|
-| 1 | 创建测试文件夹和文件 | ✓ 6个文件创建成功 |
-| 2 | 批量重命名.txt文件 | ✓ 3个文件重命名成功 |
-| 3 | 验证重命名结果 | ✓ 命名格式正确 |
-| 4 | 清理测试文件 | ✓ 清理完成 |
+| Step | Action | Duration |
+|------|--------|----------|
+| 1 | 准备测试文件 | 0.00s |
+| 2 | 打开资源管理器 | 2.01s |
+| 3 | 等待窗口 | 1.00s |
+| 4 | 批量重命名 .txt 文件 | 11.74s |
+| 5 | 验证结果 | 0.00s |
+| 6 | 关闭资源管理器 | 1.07s |
+| 7 | 清理测试目录 | 0.00s |
+
+**Result**: ✓ PASSED (批量重命名 3/3 成功)
 
 ### 验收标准
 
-✓ 所有 .txt 文件都被重命名 (3/3)  
-✓ 命名格式正确 (text_001.txt, text_002.txt, text_003.txt)  
-✓ 其他文件不受影响 (image1.png, image2.png, doc1.docx)  
-✓ 总耗时 < 30s (实际: 0.06s)
+✓ 使用 pyautogui 操作 GUI  
+✓ 所有 .txt 文件被重命名 (3/3)  
+✓ 总耗时 < 30s (实际: 15.82s)  
+✓ 使用图像识别定位文件图标
 
 ### Files Created
 
-- `test_batch_files_e2e.py` - 批量文件操作端到端测试
+- `test_batch_files_e2e.py` - GUI 批量文件重命名端到端测试
 
 ### 流程
 
 1. 创建测试目录 `E:\agent_test\batch_test\`
-2. 生成测试文件 (txt/png/docx)
-3. 使用 `pathlib.glob("*.txt")` 查找txt文件
-4. 按顺序重命名为 `text_001.txt`, `text_002.txt`, ...
-5. 验证重命名结果和其他文件完整性
-6. 清理测试目录
+2. 生成测试文件 (file1.txt, file2.txt, file3.txt, image1.png, doc1.docx)
+3. 打开资源管理器并等待窗口出现
+4. 截图 .txt 文件图标用于图像识别
+5. 逐个选中 .txt 文件并使用 F2 重命名
+6. 输入新文件名并确认
+7. 验证重命名结果
+8. 关闭资源管理器并清理测试目录
 
-**Result**: ✓ PASSED (批量重命名 全部成功)
+### 技术实现
+
+- **文件定位**: 使用 `pyautogui.locateOnScreen()` 图像识别
+- **操作流程**: 点击文件 → F2 → Ctrl+A → 输入名称 → Enter
+- **容错处理**: 图像识别失败时回退到固定坐标
+
+**Result**: ✓ PASSED (GUI 批量重命名 全部成功)

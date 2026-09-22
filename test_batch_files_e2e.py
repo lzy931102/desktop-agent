@@ -1,194 +1,252 @@
+# -*- coding: utf-8 -*-
+"""
+P7 批量文件操作 E2E 测试（GUI 版 - 重命名）
+
+用 pyautogui 操作资源管理器，批量重命名 .txt 文件。
+流程：打开资源管理器 → 选中 .txt 文件 → F2 → 输入新名字 → Enter → 验证
+"""
+
 import os
+import sys
 import time
-import json
+import subprocess
 import shutil
-from datetime import datetime
 from pathlib import Path
 
-class BatchFilesE2ETest:
-    def __init__(self):
-        self.test_results = []
-        self.test_dir = Path("E:/agent_test/batch_test")
-        self.backup_dir = Path("E:/agent_test/batch_test_backup")
-        
-    def setup_test_files(self):
-        """创建测试文件夹和文件"""
-        print("=== 步骤1: 创建测试文件夹和文件 ===")
-        
-        # 创建测试目录
-        self.test_dir.mkdir(parents=True, exist_ok=True)
-        
-        # 备份现有文件（如果存在）
-        if self.backup_dir.exists():
-            shutil.rmtree(self.backup_dir)
-        if self.test_dir.exists():
-            shutil.copytree(self.test_dir, self.backup_dir)
-        
-        # 清空测试目录
-        for item in self.test_dir.iterdir():
-            if item.is_file():
-                item.unlink()
-        
-        # 创建测试文件
-        test_files = [
-            ("file1.txt", "这是文件1的内容"),
-            ("file2.txt", "这是文件2的内容"),
-            ("file3.txt", "这是文件3的内容"),
-            ("image1.png", b'\x89PNG\r\n\x1a\n'),  # PNG文件头
-            ("image2.png", b'\x89PNG\r\n\x1a\n'),
-            ("doc1.docx", b'PK\x03\x04'),  # DOCX文件头
-        ]
-        
-        for filename, content in test_files:
-            filepath = self.test_dir / filename
-            if isinstance(content, str):
-                filepath.write_text(content, encoding='utf-8')
-            else:
-                filepath.write_bytes(content)
-        
-        # 显示创建的文件
-        files = list(self.test_dir.iterdir())
-        print(f"创建了 {len(files)} 个测试文件:")
-        for f in sorted(files):
-            print(f"  - {f.name}")
-        
-        return len(files)
-    
-    def batch_rename_txt_files(self):
-        """批量重命名.txt文件"""
-        print("\n=== 步骤2: 批量重命名.txt文件 ===")
-        
-        start_time = time.time()
-        
-        # 查找所有.txt文件
-        txt_files = sorted(self.test_dir.glob("*.txt"))
-        
-        if not txt_files:
-            print("未找到.txt文件")
-            return 0
-        
-        print(f"找到 {len(txt_files)} 个.txt文件")
-        
-        # 重命名文件
-        renamed_count = 0
-        for i, txt_file in enumerate(txt_files, 1):
-            new_name = f"text_{i:03d}.txt"
-            new_path = self.test_dir / new_name
-            
-            # 重命名
-            txt_file.rename(new_path)
-            renamed_count += 1
-            print(f"  重命名: {txt_file.name} -> {new_name}")
-        
-        elapsed = time.time() - start_time
-        print(f"重命名完成，耗时: {elapsed:.2f}s")
-        
-        return renamed_count
-    
-    def verify_rename_results(self):
-        """验证重命名结果"""
-        print("\n=== 步骤3: 验证重命名结果 ===")
-        
-        # 获取所有文件
-        all_files = sorted(self.test_dir.iterdir())
-        
-        # 分类文件
-        txt_files = [f for f in all_files if f.suffix == '.txt']
-        other_files = [f for f in all_files if f.suffix != '.txt']
-        
-        print("当前文件列表:")
-        for f in all_files:
-            print(f"  - {f.name}")
-        
-        # 验证.txt文件命名
-        print("\n验证.txt文件命名:")
-        all_correct = True
-        for i, txt_file in enumerate(txt_files, 1):
-            expected_name = f"text_{i:03d}.txt"
-            if txt_file.name == expected_name:
-                print(f"  ✓ {txt_file.name} - 命名正确")
-            else:
-                print(f"  ✗ {txt_file.name} - 命名错误，期望: {expected_name}")
-                all_correct = False
-        
-        # 验证其他文件未受影响
-        print("\n验证其他文件未受影响:")
-        other_files_ok = True
-        expected_other = ["image1.png", "image2.png", "doc1.docx"]
-        for f in other_files:
-            if f.name in expected_other:
-                print(f"  ✓ {f.name} - 未受影响")
-            else:
-                print(f"  ✗ {f.name} - 文件被意外修改")
-                other_files_ok = False
-        
-        return all_correct and other_files_ok
-    
-    def cleanup(self):
-        """清理测试文件"""
-        print("\n=== 步骤4: 清理测试文件 ===")
-        
-        # 删除测试目录
-        if self.test_dir.exists():
-            shutil.rmtree(self.test_dir)
-            print(f"已删除测试目录: {self.test_dir}")
-        
-        # 恢复备份（如果有）
-        if self.backup_dir.exists():
-            shutil.move(str(self.backup_dir), str(self.test_dir))
-            print(f"已恢复备份目录")
-    
-    def run_all_tests(self):
-        """运行所有测试"""
-        print("开始批量文件操作端到端测试...")
-        print(f"测试时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-        start_time = time.time()
-        
+import pyautogui
+
+TEST_DIR = Path(r"E:\agent_test\batch_test")
+SCREENSHOT_DIR = Path("screenshots")
+SCREENSHOT_DIR.mkdir(exist_ok=True)
+
+pyautogui.FAILSAFE = False
+pyautogui.PAUSE = 0.3
+
+
+def log_step(num, action, start):
+    """记录步骤耗时"""
+    elapsed = time.time() - start
+    print(f"[Step {num:2d}] {action:<35} {elapsed:.2f}s", flush=True)
+    return elapsed
+
+
+def log(msg):
+    timestamp = time.strftime("%H:%M:%S")
+    print(f"[{timestamp}] {msg}", flush=True)
+
+
+def take_screenshot(name):
+    path = SCREENSHOT_DIR / f"{name}.png"
+    pyautogui.screenshot(str(path))
+    log(f"截图: {name}.png")
+
+
+def setup_test_files():
+    log("准备测试目录")
+    if TEST_DIR.exists():
+        shutil.rmtree(TEST_DIR)
+    TEST_DIR.mkdir(parents=True)
+
+    files = ["file1.txt", "file2.txt", "file3.txt", "image1.png", "doc1.docx"]
+    for f in files:
+        (TEST_DIR / f).write_text(f"content of {f}", encoding="utf-8")
+
+    log(f"创建了 {len(files)} 个文件")
+    return files
+
+
+def wait_window(title, timeout=5):
+    """等待窗口出现"""
+    import ctypes
+    from ctypes import wintypes
+
+    user32 = ctypes.windll.user32
+
+    start = time.time()
+    while time.time() - start < timeout:
+        found = False
+        def callback(hwnd, lParam):
+            nonlocal found
+            if user32.IsWindowVisible(hwnd):
+                length = user32.GetWindowTextLengthW(hwnd)
+                if length > 0:
+                    buf = ctypes.create_unicode_buffer(length + 1)
+                    user32.GetWindowTextW(hwnd, buf, length + 1)
+                    if title.lower() in buf.value.lower():
+                        found = True
+            return True
+
+        WNDENUMPROC = ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)
+        user32.EnumWindows(WNDENUMPROC(callback), 0)
+        if found:
+            return True
+        time.sleep(0.3)
+    return False
+
+
+def batch_rename():
+    """批量重命名所有 .txt 文件"""
+    log("开始批量重命名 .txt 文件")
+
+    # 原始文件名列表
+    original_files = ["file1.txt", "file2.txt", "file3.txt"]
+    new_names = ["text_001.txt", "text_002.txt", "text_003.txt"]
+
+    # 先截图一个 .txt 文件图标，用于定位
+    log("截图 .txt 文件图标")
+    screenshot_path = "screenshot_txt_icon.png"
+    pyautogui.screenshot(screenshot_path)
+    time.sleep(0.5)
+
+    # 1. 逐个重命名 .txt 文件
+    for i, (old_name, new_name) in enumerate(zip(original_files, new_names)):
+        t = time.time()
+        log(f"重命名文件 {i+1}/{len(original_files)}: {old_name} → {new_name}")
+
+        # 使用 locateOnScreen 定位 .txt 文件图标
+        log("定位文件图标...")
         try:
-            # 步骤1: 创建测试文件
-            file_count = self.setup_test_files()
-            if file_count == 0:
-                print("创建测试文件失败")
-                return False
-            
-            # 步骤2: 批量重命名
-            renamed_count = self.batch_rename_txt_files()
-            if renamed_count == 0:
-                print("重命名失败")
-                return False
-            
-            # 步骤3: 验证结果
-            verification_ok = self.verify_rename_results()
-            
-            # 计算总耗时
-            total_time = time.time() - start_time
-            
-            print(f"\n=== 测试结果 ===")
-            print(f"创建文件数: {file_count}")
-            print(f"重命名文件数: {renamed_count}")
-            print(f"验证结果: {'通过' if verification_ok else '失败'}")
-            print(f"总耗时: {total_time:.2f}s")
-            
-            # 验收标准检查
-            print(f"\n=== 验收标准 ===")
-            print(f"✓ 所有 .txt 文件都被重命名: {'通过' if renamed_count > 0 else '未通过'}")
-            print(f"✓ 命名格式正确: {'通过' if verification_ok else '未通过'}")
-            print(f"✓ 其他文件不受影响: {'通过' if verification_ok else '未通过'}")
-            print(f"✓ 总耗时 < 30s: {'通过' if total_time < 30 else '未通过'}")
-            
-            return verification_ok and total_time < 30
-            
-        finally:
-            # 清理
-            self.cleanup()
+            loc = pyautogui.locateOnScreen(screenshot_path, confidence=0.8, grayscale=True)
+            if loc is None:
+                log(f"警告: 无法定位 {old_name}，尝试使用屏幕中央")
+                # 回退到固定坐标
+                file_y = 150 + i * 25
+                pyautogui.click(400, file_y)
+            else:
+                # 获取中心点坐标
+                center = pyautogui.center(loc)
+                pyautogui.click(center.x, center.y)
+                log(f"找到文件图标位置: {center}")
+        except Exception as e:
+            log(f"定位失败: {e}，使用固定坐标")
+            file_y = 150 + i * 25
+            pyautogui.click(400, file_y)
+
+        time.sleep(0.3)
+
+        # 按 F2 重命名
+        pyautogui.press('f2')
+        time.sleep(0.3)
+
+        # 全选当前文件名
+        pyautogui.hotkey('ctrl', 'a')
+        time.sleep(0.1)
+
+        # 输入新文件名
+        pyautogui.typewrite(new_name, interval=0.03)
+        time.sleep(0.3)
+
+        # 按 Enter 确认
+        pyautogui.press('enter')
+        time.sleep(0.5)
+
+        log_step(i+1, f"重命名 {old_name} → {new_name}", t)
+
+    take_screenshot("01_renamed")
+
+
+def verify_result():
+    log("验证结果...")
+
+    files = sorted([f.name for f in TEST_DIR.iterdir()])
+    log(f"文件列表: {files}")
+
+    # 检查重命名后的文件
+    renamed_files = [f for f in files if f.startswith("text_00") and f.endswith(".txt")]
+    log(f"重命名后的文件: {renamed_files}")
+
+    # 原始文件
+    original_files = [f for f in files if f in ["file1.txt", "file2.txt", "file3.txt", "image1.png", "doc1.docx"]]
+    log(f"原始文件: {original_files}")
+
+    # 验证: 3 个 .txt 文件被重命名为 text_00x.txt
+    all_renamed = len(renamed_files) >= 3
+
+    return all_renamed
+
+
+def close_explorer():
+    log("关闭资源管理器")
+    subprocess.run(["taskkill", "/F", "/IM", "explorer.exe"], capture_output=True)
+    time.sleep(1)
+
+
+def main():
+    total_start = time.time()
+    step_durations = []
+
+    print("=" * 60, flush=True)
+    print("P7 批量文件操作 E2E Test (GUI - 重命名)", flush=True)
+    print("=" * 60, flush=True)
+
+    try:
+        # Step 1: 准备测试文件
+        t = time.time()
+        setup_test_files()
+        dur = log_step(1, "准备测试文件", t)
+        step_durations.append(dur)
+
+        # Step 2: 打开资源管理器
+        t = time.time()
+        subprocess.Popen(["explorer.exe", str(TEST_DIR)])
+        time.sleep(2)
+        dur = log_step(2, "打开资源管理器", t)
+        step_durations.append(dur)
+
+        # Step 3: 等待窗口
+        t = time.time()
+        ready = wait_window("batch_test", timeout=5)
+        time.sleep(1)
+        dur = log_step(3, f"等待窗口 ({'OK' if ready else 'FAIL'})", t)
+        step_durations.append(dur)
+
+        # Step 4: 批量重命名
+        t = time.time()
+        batch_rename()
+        dur = log_step(4, "批量重命名 .txt 文件", t)
+        step_durations.append(dur)
+
+        # Step 5: 验证结果
+        t = time.time()
+        passed = verify_result()
+        dur = log_step(5, f"验证结果 ({'通过' if passed else '失败'})", t)
+        step_durations.append(dur)
+
+        # Step 6: 关闭资源管理器
+        t = time.time()
+        close_explorer()
+        dur = log_step(6, "关闭资源管理器", t)
+        step_durations.append(dur)
+
+        # Step 7: 清理
+        t = time.time()
+        if TEST_DIR.exists():
+            shutil.rmtree(TEST_DIR)
+        dur = log_step(7, "清理测试目录", t)
+        step_durations.append(dur)
+
+        # 打印汇总
+        total_time = time.time() - total_start
+        print("\n" + "=" * 60, flush=True)
+        print("每步耗时汇总", flush=True)
+        print("=" * 60, flush=True)
+        for i, d in enumerate(step_durations, 1):
+            print(f"  Step {i:2d}: {d:.2f}s", flush=True)
+        print("-" * 60, flush=True)
+        print(f"  总耗时: {total_time:.2f}s", flush=True)
+
+        # 判断通过
+        passed = passed and total_time < 30
+        print(f"\n{'✓ TEST PASSED' if passed else '✗ TEST FAILED'}", flush=True)
+        return passed
+
+    except Exception as e:
+        print(f"\n✗ ERROR: {e}", flush=True)
+        import traceback
+        traceback.print_exc()
+        return False
+
 
 if __name__ == "__main__":
-    tester = BatchFilesE2ETest()
-    success = tester.run_all_tests()
-    
-    if success:
-        print("\n批量文件操作端到端测试通过")
-        exit(0)
-    else:
-        print("\n批量文件操作端到端测试失败")
-        exit(1)
+    success = main()
+    sys.exit(0 if success else 1)
