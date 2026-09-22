@@ -14,6 +14,8 @@
 - **截屏感知** - 使用 mss + OpenCV 实时捕获屏幕
 - **OCR 文字识别** - Tesseract 中英文识别
 - **图像识别** - HSV 颜色检测定位目标
+- **多模态理解** - Qwen2.5-VL 视觉语言模型
+- **图像定位** - pyautogui.locateOnScreen 模板匹配
 - **鼠标控制** - ctypes 精确点击
 - **键盘输入** - pyautogui 模拟按键
 - **剪贴板操作** - pyperclip 复制粘贴
@@ -96,6 +98,9 @@ python test_browser_e2e.py
 | P2-2 | Word（WPS） | ✅ 4.64s |
 | P2-3 | PPT（WPS） | ✅ 6.41s |
 | P3 | 文件夹操作 | ✅ 24.95s |
+| P4 | AI 决策（LM Studio） | ✅ 18.56s |
+| P7 | 批量文件（GUI） | ✅ 15.82s |
+| P8 | 多模态升级 | ✅ 4/4 |
 
 ## 技术栈
 
@@ -104,6 +109,8 @@ python test_browser_e2e.py
 | 截屏 | mss |
 | OCR | Tesseract |
 | 图像处理 | OpenCV |
+| 多模态 | Qwen2.5-VL |
+| 图像定位 | pyautogui.locateOnScreen |
 | 鼠标控制 | ctypes |
 | 键盘模拟 | pyautogui |
 | 剪贴板 | pyperclip |
