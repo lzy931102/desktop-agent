@@ -397,6 +397,7 @@ class DesktopAgent:
 
         # 如果没有传入 LLM，使用 None（会在 run 时创建）
         self.llm = llm
+        self.max_turns = 10  # 优化：减少循环次数
 
     def run(self, user_input: str) -> str:
         self.messages.append({"role": "user", "content": user_input})
@@ -429,6 +430,17 @@ class DesktopAgent:
 
             self.messages.append(resp)
 
+            # 检查是否完成（没有工具调用 = 完成）
+            if not resp.get("tool_calls"):
+                if resp.get("content"):
+                    assistant_msg = f"[助手] {resp['content']}"
+                    if self.on_log:
+                        self.on_log(assistant_msg)
+                    else:
+                        print(assistant_msg)
+                    return resp["content"]
+
+            # 处理工具调用
             if resp.get("tool_calls"):
                 for tc in resp["tool_calls"]:
                     tool_start = time.time()
