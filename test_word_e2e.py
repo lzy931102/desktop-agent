@@ -1,3 +1,15 @@
+# -*- coding: utf-8 -*-
+"""
+P2-2 Word E2E 测试
+
+用 COM 接口操作 WPS 文字，完成：
+1. 打开 Word
+2. 输入标题和正文
+3. 保存到 E:\agent_test\word_result.docx
+4. 关闭
+5. 验证文件存在
+"""
+
 import time
 import os
 import sys

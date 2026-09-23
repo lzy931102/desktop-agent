@@ -1,3 +1,16 @@
+# -*- coding: utf-8 -*-
+"""
+P2-3 PPT E2E 测试
+
+用 COM 接口操作 WPS 演示，完成：
+1. 打开 PowerPoint
+2. 新建幻灯片
+3. 输入标题
+4. 保存到 E:\agent_test\ppt_result.pptx
+5. 关闭
+6. 验证文件存在
+"""
+
 import time
 import os
 import sys

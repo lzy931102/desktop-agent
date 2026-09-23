@@ -1,3 +1,15 @@
+# -*- coding: utf-8 -*-
+"""
+P2-1 Excel E2E 测试
+
+用 COM 接口操作 WPS 表格，完成：
+1. 打开 Excel
+2. 输入数据（A1=10, A2=20, A3==A1+A2）
+3. 验证 A3=30
+4. 保存到 E:\agent_test\excel_result.xlsx
+5. 关闭
+"""
+
 import time
 import os
 import sys
