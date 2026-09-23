@@ -94,6 +94,9 @@ python test_browser_e2e.py
 | T9 | 异常恢复 | ✅ 4/4 |
 | T10 | 安全拦截 | ✅ 14/14 |
 | T11 | 任务链 | ✅ 11/11 |
+| P2-1 | Excel（WPS） | ✅ 7.89s |
+| P2-2 | Word（WPS） | ✅ 11.29s |
+| P2-3 | PPT（WPS） | ✅ 9.28s |
 | P2-1 | Excel（WPS） | ✅ 4.37s |
 | P2-2 | Word（WPS） | ✅ 4.64s |
 | P2-3 | PPT（WPS） | ✅ 6.41s |
