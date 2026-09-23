@@ -79,6 +79,36 @@ python test_calculator_e2e.py
 python test_browser_e2e.py
 ```
 
+## GUI 使用
+
+### 启动 GUI
+
+```bash
+python gui.py
+```
+
+### 界面说明
+
+1. **输入框**：用自然语言描述任务
+2. **开始按钮**：点击执行
+3. **状态区**：实时显示进度
+4. **日志区**：显示操作过程
+5. **结果区**：显示完成状态
+
+### 示例任务
+
+- 打开计算器
+- 打开记事本，输入 Hello
+- 打开浏览器，搜索 Python
+
+### 打包 exe
+
+```bash
+pyinstaller --onefile --windowed --name "DesktopAgent" gui.py
+```
+
+打包后生成：`dist/DesktopAgent.exe`
+
 ## 测试结果
 
 | 编号 | 测试项 | 结果 |
