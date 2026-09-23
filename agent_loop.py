@@ -384,19 +384,40 @@ SYSTEM_PROMPT = """你是一个桌面自动化助手，可以通过工具控制�
 
 
 class DesktopAgent:
-    def __init__(self, llm: LLMClient, workdir: Path = None):
-        self.llm = llm
+    def __init__(self, llm: LLMClient = None, workdir: Path = None):
         self.workdir = workdir or Path.cwd()
         self.messages = [
             {"role": "system", "content": SYSTEM_PROMPT}
         ]
         self.max_turns = 20
         self._image_located = False  # 追踪图像是否识别成功
+        self.on_tool_call = None      # 回调：工具调用前
+        self.on_tool_result = None    # 回调：工具调用后
+        self.on_log = None            # 回调：通用日志
+
+        # 如果没有传入 LLM，使用 None（会在 run 时创建）
+        self.llm = llm
 
     def run(self, user_input: str) -> str:
         self.messages.append({"role": "user", "content": user_input})
         for turn in range(self.max_turns):
-            print(f"\n--- 第 {turn+1} 轮 ---")
+            log_msg = f"\n--- 第 {turn+1} 轮 ---"
+            if self.on_log:
+                self.on_log(log_msg)
+            else:
+                print(log_msg)
+
+            # 如果没有 LLM，创建一个临时的
+            if self.llm is None:
+                from agent_loop import LLMProvider, LLMConfig
+                config = LLMConfig(
+                    provider=LLMProvider.OLLAMA,
+                    base_url="http://localhost:11434",
+                    model="qwen2.5-coder:7b",
+                    temperature=0.1
+                )
+                self.llm = LLMClient(config)
+
             resp = self.llm.chat(self.messages, TOOLS_SCHEMA)
             self.messages.append(resp)
 
@@ -404,28 +425,56 @@ class DesktopAgent:
                 for tc in resp["tool_calls"]:
                     name = tc["function"]["name"]
                     args = json.loads(tc["function"]["arguments"])
-                    print(f"[调用工具] {name}({args})")
+
+                    # 调用工具调用回调
+                    if self.on_tool_call:
+                        self.on_tool_call(name, args)
+                    else:
+                        tool_msg = f"[调用工具] {name}({args})"
+                        print(tool_msg)
 
                     # 安全拦截：图像识别失败后禁止点击
                     if name == "click" and not self._image_located:
                         result = "错误: 图像未识别成功，禁止点击操作"
-                        print(f"[拦截] {result}")
+                        intercept_msg = f"[拦截] {result}"
+                        if self.on_log:
+                            self.on_log(intercept_msg)
+                        else:
+                            print(intercept_msg)
                     elif name == "locate_on_screen":
                         try:
                             result = TOOL_FUNCTIONS[name](args)
-                            print(f"[结果] {result}")
+                            # 调用工具结果回调
+                            if self.on_tool_result:
+                                self.on_tool_result(name, args, result)
+                            else:
+                                result_msg = f"[结果] {result}"
+                                print(result_msg)
                             self._image_located = "found at" in str(result)
                         except Exception as e:
                             result = f"错误: {e}"
+                            error_msg = f"[错误] {result}"
+                            if self.on_log:
+                                self.on_log(error_msg)
+                            else:
+                                print(error_msg)
                             self._image_located = False
-                            print(f"[错误] {result}")
                     else:
                         try:
                             result = TOOL_FUNCTIONS[name](args)
-                            print(f"[结果] {result}")
+                            # 调用工具结果回调
+                            if self.on_tool_result:
+                                self.on_tool_result(name, args, result)
+                            else:
+                                result_msg = f"[结果] {result}"
+                                print(result_msg)
                         except Exception as e:
                             result = f"错误: {e}"
-                            print(f"[错误] {result}")
+                            error_msg = f"[错误] {result}"
+                            if self.on_log:
+                                self.on_log(error_msg)
+                            else:
+                                print(error_msg)
 
                     self.messages.append({
                         "role": "tool",
@@ -435,7 +484,11 @@ class DesktopAgent:
                 continue
 
             if resp.get("content"):
-                print(f"[助手] {resp['content']}")
+                assistant_msg = f"[助手] {resp['content']}"
+                if self.on_log:
+                    self.on_log(assistant_msg)
+                else:
+                    print(assistant_msg)
                 return resp["content"]
 
         return "达到最大轮次限制"
