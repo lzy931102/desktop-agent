@@ -4,6 +4,9 @@ agent_config.json
 *.key
 secrets.json
 
+# 归档目录
+archive/
+
 # 缓存
 __pycache__/
 *.pyc
