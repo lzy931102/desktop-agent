@@ -48,3 +48,9 @@ agent/agent.log
 
 # 归档目录
 archive/
+
+# PyInstaller 打包产物
+build/
+dist/
+*.spec
+DesktopAgent.exe
