@@ -240,7 +240,7 @@ Agent 有两种执行方式，按优先级选择：
 - `test_browser_e2e.py` - T7浏览器E2E
 - `test_stability_e2e.py` - T8稳定性测试
 - `test_recovery_e2e.py` - T9异常恢复测试
-- `test_security_e2e.py` - T10安全拦截测试
+- `test_security_module.py` - T10安全拦截测试
 - `test_task_chain_e2e.py` - T11任务链测试
 - `test_excel_e2e.py` - Excel E2E测试（COM自动化）
 

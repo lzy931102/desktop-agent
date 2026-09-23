@@ -7,7 +7,7 @@
 ## 前置
 
 - 安全模块：F:\opencode-workspace\security_module.py（从 D:\文档\Default Project\ 恢复）
-- 测试脚本：F:\opencode-workspace\test_security_e2e.py（从 D:\文档\Default Project\ 恢复）
+- 测试脚本：F:\opencode-workspace\test_security_module.py（从 D:\文档\Default Project\ 恢复）
 
 ## 步骤
 
