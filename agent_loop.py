@@ -400,7 +400,10 @@ class DesktopAgent:
 
     def run(self, user_input: str) -> str:
         self.messages.append({"role": "user", "content": user_input})
+        total_start = time.time()
+
         for turn in range(self.max_turns):
+            turn_start = time.time()
             log_msg = f"\n--- 第 {turn+1} 轮 ---"
             if self.on_log:
                 self.on_log(log_msg)
@@ -418,11 +421,17 @@ class DesktopAgent:
                 )
                 self.llm = LLMClient(config)
 
+            # LLM 调用
+            llm_start = time.time()
             resp = self.llm.chat(self.messages, TOOLS_SCHEMA)
+            llm_time = time.time() - llm_start
+            print(f"[耗时] LLM 响应: {llm_time:.2f}s")
+
             self.messages.append(resp)
 
             if resp.get("tool_calls"):
                 for tc in resp["tool_calls"]:
+                    tool_start = time.time()
                     name = tc["function"]["name"]
                     args = json.loads(tc["function"]["arguments"])
 
@@ -443,7 +452,11 @@ class DesktopAgent:
                             print(intercept_msg)
                     elif name == "locate_on_screen":
                         try:
+                            exec_start = time.time()
                             result = TOOL_FUNCTIONS[name](args)
+                            exec_time = time.time() - exec_start
+                            print(f"[耗时] {name} 执行: {exec_time:.2f}s")
+
                             # 调用工具结果回调
                             if self.on_tool_result:
                                 self.on_tool_result(name, args, result)
@@ -461,7 +474,11 @@ class DesktopAgent:
                             self._image_located = False
                     else:
                         try:
+                            exec_start = time.time()
                             result = TOOL_FUNCTIONS[name](args)
+                            exec_time = time.time() - exec_start
+                            print(f"[耗时] {name} 执行: {exec_time:.2f}s")
+
                             # 调用工具结果回调
                             if self.on_tool_result:
                                 self.on_tool_result(name, args, result)
