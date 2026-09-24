@@ -19,6 +19,17 @@ import pyautogui
 pyautogui.FAILSAFE = True
 pyautogui.PAUSE = 0.3
 
+import agent_vision
+from agent_vision import (
+    analyze_screen,
+    list_visible_windows as _list_windows_impl,
+    focus_window as _focus_window_impl,
+    list_ui_elements as _list_ui_elements_impl,
+    click_ui_element as _click_ui_element_impl,
+    clipboard_read as _clipboard_read_impl,
+    clipboard_write as _clipboard_write_impl,
+)
+
 
 class LLMProvider(Enum):
     OPENAI = "openai"
@@ -360,6 +371,92 @@ TOOLS_SCHEMA = [
     {
         "type": "function",
         "function": {
+            "name": "analyze_screen",
+            "description": "看一眼当前屏幕并回答问题（视觉分析，约30秒）。适用于：了解屏幕上有什么、某应用是否打开、界面当前处于什么状态。只回答内容，不返回坐标",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "question": {"type": "string", "description": "想了解的问题，如：屏幕上有哪些应用窗口？记事本现在是空白还是有文字？"}
+                },
+                "required": ["question"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_windows",
+            "description": "列出当前所有可见窗口的标题、位置和活动状态",
+            "parameters": {"type": "object", "properties": {}}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "focus_window",
+            "description": "把指定标题的窗口切到前台（标题模糊匹配）",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string", "description": "窗口标题的一部分，如：记事本"}
+                },
+                "required": ["title"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_ui_elements",
+            "description": "列出窗口内可操作控件（按钮/菜单/输入框）及其精确坐标。这是了解一个应用能做什么的最可靠方式，推荐在点击前先列出",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "window_title": {"type": "string", "description": "窗口标题的一部分；不填则用当前活动窗口"}
+                }
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "click_ui_element",
+            "description": "按名称点击窗口内的控件（菜单项/按钮等），最可靠的点击方式。点击前建议先用 list_ui_elements 查看控件名称",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "window_title": {"type": "string", "description": "窗口标题的一部分；不填则用当前活动窗口"},
+                    "name": {"type": "string", "description": "控件名称，如：格式(O)、保存"}
+                },
+                "required": ["name"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "clipboard_read",
+            "description": "读取剪贴板里的文本内容",
+            "parameters": {"type": "object", "properties": {}}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "clipboard_write",
+            "description": "把文本写入剪贴板（之后可用 ctrl+v 粘贴）",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "text": {"type": "string", "description": "要写入的文本"}
+                },
+                "required": ["text"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "get_mouse_position",
             "description": "获取当前鼠标坐标",
             "parameters": {"type": "object", "properties": {}}
@@ -448,38 +545,45 @@ TOOL_FUNCTIONS = {
     "open_app": lambda args: _open_app(args["app_name"]),
     "get_mouse_position": lambda args: (lambda pos: f"mouse at {pos}")(pyautogui.position()),
     "get_screen_size": lambda args: (lambda sz: f"screen size {sz}")(pyautogui.size()),
+    "analyze_screen": lambda args: analyze_screen(args["question"]),
+    "list_windows": lambda args: _list_windows_impl(),
+    "focus_window": lambda args: _focus_window_impl(args["title"]),
+    "list_ui_elements": lambda args: _list_ui_elements_impl(args.get("window_title", "")),
+    "click_ui_element": lambda args: _click_ui_element_impl(args.get("window_title", ""), args["name"]),
+    "clipboard_read": lambda args: _clipboard_read_impl(),
+    "clipboard_write": lambda args: _clipboard_write_impl(args["text"]),
 }
 
 
-SYSTEM_PROMPT = """你是一个桌面自动化助手，可以通过工具控制鼠标、键盘、截图、查找图片等。
+SYSTEM_PROMPT = """你是一个电脑操作助手，通过工具帮用户完成桌面任务。你能看屏幕、管窗口、点控件、用剪贴板。
 
 可用工具：
-- click(x, y, button, clicks): 点击屏幕坐标
-- type_text(text, interval): 输入文本
-- press_key(key, presses): 按键
-- hotkey(keys): 组合键
-- move_to(x, y, duration): 移动鼠标
-- scroll(clicks): 滚动
-- screenshot(path): 截图
-- locate_on_screen(image_path, confidence): 在屏幕上查找图像模板（需要预先准备好的png图片），返回坐标
-- wait(seconds): 等待
-- open_app(app_name): 打开应用（如 notepad, calc, cmd, explorer）
-- get_mouse_position(): 获取鼠标位置
-- get_screen_size(): 获取屏幕大小
+- list_windows(): 列出所有可见窗口
+- focus_window(title): 把窗口切到前台
+- analyze_screen(question): 看一眼屏幕并回答问题（约30秒，较慢，必要时才用）
+- list_ui_elements(window_title): 列出窗口内的控件（按钮/菜单/输入框）及精确坐标
+- click_ui_element(window_title, name): 按名称点击控件——最可靠的点击方式
+- open_app(app_name): 打开应用（notepad/calc/cmd/explorer/paint/记事本/计算器等）
+- click(x, y): 点击屏幕坐标；type_text(text): 在光标处输入文本（支持中文，自动粘贴）
+- press_key(key) / hotkey(keys): 按键与组合键；scroll(clicks): 滚动；move_to(x, y): 移动鼠标
+- clipboard_read() / clipboard_write(text): 读写剪贴板
+- locate_on_screen(image_path): 用模板图片找位置（需要预先准备好的png）
+- wait(seconds): 等待；screenshot(path): 截图保存
 
-工具选择指南：
-1. 要打开应用程序（如记事本、计算器、游戏、文件夹等）→ 用 open_app
-2. 要点击屏幕上某个按钮/图标（需要预先截图作为模板）→ 用 locate_on_screen 找到坐标，再用 click 点击
-3. locate_on_screen 需要的是图片文件（.png），不是应用程序名称
+标准工作流（重要）：
+1. 了解环境：先 list_windows 看有哪些窗口；需要目标应用时先 open_app 或 focus_window 把它切到前台
+2. 操作控件：list_ui_elements 查看目标窗口的控件名称 → click_ui_element 按名称点击。
+   这比猜坐标可靠得多，是首选
+3. 看懂界面：需要了解屏幕内容/确认操作结果时用 analyze_screen（较慢，别每轮都用）
+4. 兜底手段：控件方式行不通时，才用 analyze_screen 了解大致位置，再 click(x, y) 坐标点击
+5. 输入文本：先点击输入框获得焦点，再 type_text
 
 安全规则：
 1. 不要执行任何危险或破坏性操作（删除文件、关闭系统、修改系统设置等）
-2. 连续操作间留出等待时间
+2. 应用响应慢时用 wait 等待，不要连点
 3. 坐标基于主屏幕左上角(0,0)
-4. 【重要】如果 locate_on_screen 返回"未找到图像"或"错误"，必须停止操作，绝对不要点击任何坐标
-5. 【重要】只有 locate_on_screen 返回 "found at (x, y)" 时才能继续点击操作
 
-收到用户指令后，规划步骤并调用工具。每步完成后简要汇报结果。任务完成后，用一句明确的话告诉用户结果（如"计算器已打开"）。"""
+收到用户指令后，规划步骤并调用工具。每步完成后简要汇报。任务完成后，用一句明确的话告诉用户结果（如"计算器已打开，并按下了数字 9"）。"""
 
 
 class DesktopAgent:
@@ -489,7 +593,8 @@ class DesktopAgent:
             {"role": "system", "content": SYSTEM_PROMPT}
         ]
         self.max_turns = 10
-        self._image_located = False  # 追踪图像是否识别成功
+        self._image_located = False   # locate_on_screen 是否成功（供旧逻辑兼容）
+        self._last_locate_failed = False  # 上一次 locate_on_screen 失败 → 拦截下一次盲点击
         self._stop_requested = False  # 用户请求停止
         self.on_tool_call = None      # 回调：工具调用前
         self.on_tool_result = None    # 回调：工具调用后
@@ -562,10 +667,12 @@ class DesktopAgent:
                 else:
                     self._log(f"[调用工具] {name} {args}")
 
-                # 安全拦截：图像识别失败后禁止点击
-                if name == "click" and not self._image_located:
-                    result = "错误: 图像未识别成功，禁止点击操作"
+                # 安全拦截：仅当上一步 locate_on_screen 失败时，拦截紧随其后的盲坐标点击
+                if name == "click" and self._last_locate_failed:
+                    result = ("错误: 上一步图像定位失败，禁止立即点击坐标。"
+                              "请改用 click_ui_element 按名称点击，或重新 locate_on_screen")
                     self._log(f"[拦截] {result}")
+                    self._last_locate_failed = False
                 else:
                     try:
                         exec_start = time.time()
@@ -573,6 +680,7 @@ class DesktopAgent:
                         self._log(f"工具执行用时 {time.time() - exec_start:.1f} 秒")
                         if name == "locate_on_screen":
                             self._image_located = "found at" in str(result)
+                            self._last_locate_failed = not self._image_located
                     except KeyError:
                         result = f"错误: 未知工具 {name}"
                         self._log(f"[错误] {result}")
