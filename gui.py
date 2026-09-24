@@ -12,6 +12,9 @@ import time
 import customtkinter as ctk
 import agent_vision
 from agent_loop import DesktopAgent, LLMClient, LLMConfig, LLMProvider
+from core.approval import GuiApprovalBridge
+from core.audit import AuditLogger
+from core.history import TaskHistory
 
 OLLAMA_URL = "http://localhost:11434"
 MODEL_NAME = "qwen2.5-coder:7b"
@@ -100,6 +103,12 @@ class AgentGUI:
         self.current_turn = 0
         self.ollama_ok = None  # None=检测中
 
+        # 企业化基础设施（个人版实现，接口与企业版一致）
+        self.audit = AuditLogger()
+        self.history = TaskHistory()
+        self.approval_bridge = GuiApprovalBridge()
+        self._confirm_open = False
+
         self.log_queue = queue.Queue()
 
         self._build_header()
@@ -126,6 +135,12 @@ class AgentGUI:
             font=ctk.CTkFont(size=12), text_color=MUTED,
         )
         self.conn_label.pack(side="right")
+        ctk.CTkButton(
+            bar, text="📜 历史", width=64, height=24, corner_radius=6,
+            fg_color="transparent", border_width=1, border_color=BORDER,
+            text_color=MUTED, hover_color="#2A2A2A",
+            font=ctk.CTkFont(size=12), command=self._show_history,
+        ).pack(side="right", padx=(0, 12))
 
     def _build_status_card(self):
         card = ctk.CTkFrame(self.root, fg_color=CARD, corner_radius=12,
@@ -195,6 +210,7 @@ class AgentGUI:
         self.log_text.insert("end", "👋 你好，我是你的桌面助手\n", "assistant")
         self.log_text.insert("end", "   在下方输入你想做的事，我会一步步操作电脑并记录在这里。\n", "muted")
         self.log_text.insert("end", "   例如：「打开计算器」「打开记事本，输入 你好」\n", "muted")
+        self.log_text.insert("end", "   高风险操作（删除、关闭窗口等）我会先征求你的同意。\n", "muted")
         self.log_text.configure(state="disabled")
 
     def _build_chips(self):
@@ -344,7 +360,10 @@ class AgentGUI:
                 model=MODEL_NAME,
                 temperature=0.1
             )
-            self.agent = DesktopAgent(LLMClient(config))
+            self.agent = DesktopAgent(LLMClient(config),
+                                      auditor=self.audit,
+                                      history=self.history,
+                                      approval=self.approval_bridge)
             self.agent.on_log = lambda m: self.log_queue.put(("log", m))
             self.agent.on_tool_call = self._on_tool_call
             self.agent.on_tool_result = self._on_tool_result
@@ -373,7 +392,7 @@ class AgentGUI:
         else:
             self.log_queue.put(("conn", (False, info)))
 
-    # ================= 定时泵：队列 + 计时 =================
+    # ================= 定时泵：队列 + 计时 + 确认请求 =================
     def _pump(self):
         try:
             while True:
@@ -396,6 +415,13 @@ class AgentGUI:
         except queue.Empty:
             pass
 
+        # agent 工作线程请求确认高危操作 → 主线程弹窗
+        if not self._confirm_open:
+            req = self.approval_bridge.pending()
+            if req:
+                self._confirm_open = True
+                self._show_confirm(req)
+
         if self.is_running and self.run_start_time:
             elapsed = int(time.time() - self.run_start_time)
             turn = f"第 {self.current_turn}/{MAX_TURNS} 轮" if self.current_turn else "准备中"
@@ -417,11 +443,97 @@ class AgentGUI:
         self.log_text.see("end")
         self.log_text.configure(state="disabled")
 
+    # ================= 确认弹窗（高危操作） =================
+    def _show_confirm(self, req: dict):
+        dlg = ctk.CTkToplevel(self.root, fg_color=CARD)
+        dlg.title("⚠ 需要你的确认")
+        dlg.geometry("480x320")
+        dlg.attributes("-topmost", True)
+        dlg.resizable(False, False)
+        dlg.grab_set()
+
+        body = ctk.CTkFrame(dlg, fg_color="transparent")
+        body.pack(fill="both", expand=True, padx=22, pady=18)
+
+        ctk.CTkLabel(body, text="⚠ 助手想执行一个高风险操作",
+                     font=ctk.CTkFont(size=15, weight="bold"),
+                     text_color=WARN).pack(anchor="w")
+        ctk.CTkLabel(body, text="原因：" + req["reason"],
+                     font=ctk.CTkFont(size=12), text_color=MUTED,
+                     wraplength=420, justify="left").pack(anchor="w", pady=(6, 12))
+
+        card = ctk.CTkFrame(body, fg_color=INPUT_BG, corner_radius=8)
+        card.pack(fill="both", expand=True)
+        ctk.CTkLabel(card, text=f"工具：{req['tool']}",
+                     font=ctk.CTkFont(family="Consolas", size=12),
+                     text_color=TOOLC, anchor="w").pack(fill="x", padx=12, pady=(10, 2))
+        ctk.CTkLabel(card, text=f"参数：{req['args']}",
+                     font=ctk.CTkFont(family="Consolas", size=12), text_color=TEXT,
+                     anchor="w", wraplength=400, justify="left").pack(fill="x", padx=12, pady=(0, 12))
+
+        btns = ctk.CTkFrame(body, fg_color="transparent")
+        btns.pack(fill="x", pady=(14, 0))
+        ctk.CTkButton(
+            btns, text="✗ 拒绝", width=130, height=38, corner_radius=8,
+            fg_color="#7A3B3B", hover_color="#964646",
+            font=ctk.CTkFont(size=13, weight="bold"),
+            command=lambda: self._answer_confirm(dlg, req, False),
+        ).pack(side="right")
+        ctk.CTkButton(
+            btns, text="✓ 允许执行", width=130, height=38, corner_radius=8,
+            fg_color=ACCENT, hover_color=ACCENT_HOVER,
+            font=ctk.CTkFont(size=13, weight="bold"),
+            command=lambda: self._answer_confirm(dlg, req, True),
+        ).pack(side="right", padx=(0, 10))
+
+        dlg.protocol("WM_DELETE_WINDOW", lambda: self._answer_confirm(dlg, req, False))
+
+    def _answer_confirm(self, dlg, req: dict, allowed: bool):
+        GuiApprovalBridge.complete(req, allowed)
+        self._confirm_open = False
+        dlg.grab_release()
+        dlg.destroy()
+        self._log_line("info" if allowed else "warning",
+                       ("✓ 已允许执行" if allowed else "✗ 已拒绝执行") + f"（{req['tool']}）")
+
+    # ================= 历史面板 =================
+    def _show_history(self):
+        dlg = ctk.CTkToplevel(self.root, fg_color=BG)
+        dlg.title("任务历史")
+        dlg.geometry("720x480")
+        dlg.grab_set()
+
+        head = ctk.CTkFrame(dlg, fg_color="transparent")
+        head.pack(fill="x", padx=18, pady=(16, 6))
+        ctk.CTkLabel(head, text="📜 最近任务", font=ctk.CTkFont(size=15, weight="bold"),
+                     text_color=TEXT).pack(side="left")
+        ctk.CTkLabel(head, text=f"记录存放：{self.history.path.parent}",
+                     font=ctk.CTkFont(size=10), text_color=MUTED).pack(side="right")
+
+        box = ctk.CTkTextbox(dlg, font=ctk.CTkFont(family="Consolas", size=12),
+                             fg_color="#191919", corner_radius=10, wrap="word",
+                             state="disabled")
+        box.pack(fill="both", expand=True, padx=18, pady=(0, 16))
+        rows = self.history.recent(50)
+        text = ""
+        for r in rows:
+            mark = {"success": "✓", "error": "✗", "stopped": "⏹",
+                    "running": "⏳"}.get(r.get("status", ""), "·")
+            elapsed = f"  {r.get('elapsed_s', 0):.0f}秒" if r.get("elapsed_s") else ""
+            task = r.get("task", "")
+            if len(task) > 40:
+                task = task[:40] + "…"
+            text += f"{mark} {r.get('ts', '')}  {task}{elapsed}\n"
+        box.configure(state="normal")
+        box.insert("1.0", text or "还没有任务记录")
+        box.configure(state="disabled")
+
     def _on_close(self):
         if self.is_running:
             self._set_status("⚠", "任务进行中，请先停止再关闭",
                              "点击「⏹ 停止」结束当前任务", color=WARN, card=CARD)
             return
+        self.audit.close()
         self.root.destroy()
 
 

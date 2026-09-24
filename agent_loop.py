@@ -29,6 +29,10 @@ from agent_vision import (
     clipboard_read as _clipboard_read_impl,
     clipboard_write as _clipboard_write_impl,
 )
+from core import guard
+from core.approval import AutoDenyPolicy
+from core.audit import AuditLogger
+from core.history import TaskHistory
 
 
 class LLMProvider(Enum):
@@ -587,7 +591,11 @@ SYSTEM_PROMPT = """你是一个电脑操作助手，通过工具帮用户完成�
 
 
 class DesktopAgent:
-    def __init__(self, llm: LLMClient = None, workdir: Path = None):
+    def __init__(self, llm: LLMClient = None, workdir: Path = None,
+                 auditor: AuditLogger = None, history: TaskHistory = None,
+                 approval=None):
+        """auditor/history/approval 为企业化基础设施（core 包），依赖注入：
+        不传则无审计无历史，高危操作按 AutoDenyPolicy 拒绝。"""
         self.workdir = workdir or Path.cwd()
         self.messages = [
             {"role": "system", "content": SYSTEM_PROMPT}
@@ -600,6 +608,10 @@ class DesktopAgent:
         self.on_tool_result = None    # 回调：工具调用后
         self.on_log = None            # 回调：通用日志
         self.current_turn = 0         # 当前轮次（供界面显示）
+
+        self.auditor = auditor
+        self.history = history
+        self.approval = approval if approval is not None else AutoDenyPolicy()
 
         # 如果没有传入 LLM，使用 None（会在 run 时创建）
         self.llm = llm
@@ -615,8 +627,35 @@ class DesktopAgent:
             print(msg)
 
     def run(self, user_input: str) -> str:
+        """任务入口：包装历史记录与审计生命周期，循环体在 _run_loop"""
         self.messages.append({"role": "user", "content": user_input})
+        task_id = self.history.start(user_input) if self.history else None
+        start = time.time()
+        if self.auditor:
+            self.auditor.emit("task_start", task_id=task_id, input=user_input)
+        error = None
+        try:
+            result = self._run_loop()
+        except Exception as e:
+            error = str(e)
+            result = f"错误: {error}"
+            self._log(f"[错误] {result}")
+        finally:
+            if task_id and self.history:
+                status = ("error" if error else
+                          "stopped" if "停止" in (result or "") else
+                          "max_turns" if "最大轮次" in (result or "") else
+                          "success")
+                self.history.end(task_id, status, result or "",
+                                 self.current_turn, time.time() - start)
+            if self.auditor:
+                self.auditor.emit("task_end", task_id=task_id,
+                                  status="error" if error else "finished",
+                                  turns=self.current_turn,
+                                  elapsed_s=round(time.time() - start, 1))
+        return result
 
+    def _run_loop(self) -> str:
         for turn in range(self.max_turns):
             if self._stop_requested:
                 return "已按要求停止执行。"
@@ -662,6 +701,29 @@ class DesktopAgent:
                 else:
                     args = raw_args or {}
 
+                # 审计 + 风险评估 + 高危操作确认（core 基础设施）
+                if self.auditor:
+                    self.auditor.emit("tool_call", tool=name, args=args)
+                risk, reason = guard.evaluate(name, args)
+                if risk == "high":
+                    allowed = self.approval.decide(name, args, risk, reason)
+                    if self.auditor:
+                        self.auditor.emit("approval", tool=name, reason=reason,
+                                          allowed=allowed)
+                    if not allowed:
+                        result = (f"该操作被安全策略拦截（{reason}）。"
+                                  f"请改用安全的方式完成任务，或说明需要用户手动处理")
+                        self._log(f"[拦截] {name}: {reason}")
+                        if self.on_tool_result:
+                            self.on_tool_result(name, args, result)
+                        self.messages.append({
+                            "role": "tool",
+                            "tool_call_id": tc.get("id", ""),
+                            "content": str(result)
+                        })
+                        continue
+                    self._log(f"[确认] 「{name}」已获用户批准（{reason}）")
+
                 if self.on_tool_call:
                     self.on_tool_call(name, args)
                 else:
@@ -692,6 +754,8 @@ class DesktopAgent:
                     self.on_tool_result(name, args, result)
                 else:
                     self._log(f"[结果] {result}")
+                if self.auditor:
+                    self.auditor.emit("tool_result", tool=name, result=str(result)[:300])
 
                 self.messages.append({
                     "role": "tool",
