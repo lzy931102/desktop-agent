@@ -10,6 +10,7 @@ import threading
 import queue
 import time
 import customtkinter as ctk
+import agent_vision
 from agent_loop import DesktopAgent, LLMClient, LLMConfig, LLMProvider
 
 OLLAMA_URL = "http://localhost:11434"
@@ -41,6 +42,10 @@ TOOL_NAMES = {
     "press_key": "按键", "hotkey": "按快捷键", "move_to": "移动鼠标",
     "scroll": "滚动", "screenshot": "截取屏幕", "locate_on_screen": "查找屏幕图像",
     "wait": "等待", "get_mouse_position": "获取鼠标位置", "get_screen_size": "获取分辨率",
+    "analyze_screen": "看屏幕", "list_windows": "查看窗口列表",
+    "focus_window": "切换窗口", "list_ui_elements": "查看窗口控件",
+    "click_ui_element": "点击控件", "clipboard_read": "读取剪贴板",
+    "clipboard_write": "写入剪贴板",
 }
 
 EXAMPLES = ["打开计算器", "打开记事本，输入 你好", "截取屏幕"]
@@ -231,7 +236,7 @@ class AgentGUI:
     def _build_footer(self):
         ctk.CTkLabel(
             self.root,
-            text=f"模型 {MODEL_NAME} · 本地 Ollama 运行，屏幕数据不会上传 · Ctrl+Enter 快速开始",
+            text="能看屏幕 · 能管窗口 · 能点控件按钮 · 本地 Ollama 运行，屏幕数据不上传 · Ctrl+Enter 开始",
             font=ctk.CTkFont(size=11), text_color=MUTED,
         ).pack(pady=(0, 12))
 
@@ -361,7 +366,12 @@ class AgentGUI:
     def _check_connection(self):
         config = LLMConfig(provider=LLMProvider.OLLAMA, base_url=OLLAMA_URL, model=MODEL_NAME)
         ok, info = LLMClient(config).check_connection()
-        self.log_queue.put(("conn", (ok, info)))
+        vision_ok = agent_vision.get_vision().is_available() if ok else False
+        if ok:
+            extra = "，支持看屏分析" if vision_ok else "（未装视觉模型，看屏功能不可用）"
+            self.log_queue.put(("conn", (True, info + extra)))
+        else:
+            self.log_queue.put(("conn", (False, info)))
 
     # ================= 定时泵：队列 + 计时 =================
     def _pump(self):
@@ -374,7 +384,7 @@ class AgentGUI:
                     ok, info = payload
                     self.ollama_ok = ok
                     if ok:
-                        self.conn_label.configure(text=f"● Ollama 已连接 · {MODEL_NAME}",
+                        self.conn_label.configure(text=f"● Ollama 已连接 · {info}",
                                                   text_color=OK)
                     else:
                         self.conn_label.configure(text=f"○ Ollama 未连接（{info}）",
