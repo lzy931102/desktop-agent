@@ -8,17 +8,12 @@ from typing import List, Dict, Any, Optional
 from dataclasses import dataclass
 from enum import Enum
 
-try:
-    import requests
-except ImportError:
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "requests"])
-    import requests
+import requests
 
 try:
     from openai import OpenAI
 except ImportError:
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "openai"])
-    from openai import OpenAI
+    OpenAI = None  # 仅使用 OpenAI 兼容云端服务时需要；本地 Ollama 模式不需要
 
 import pyautogui
 pyautogui.FAILSAFE = True
@@ -50,6 +45,8 @@ class LLMClient:
     def _create_client(self):
         if self.config.provider == LLMProvider.OLLAMA:
             return None
+        if OpenAI is None:
+            raise RuntimeError("未安装 openai 库，无法使用云端模型；请改用本地 Ollama 模式")
         return OpenAI(
             api_key=self.config.api_key,
             base_url=self.config.base_url or self._default_base_url()
@@ -94,25 +91,123 @@ class LLMClient:
             ]
         }
 
+    def check_connection(self) -> tuple:
+        """检查 LLM 服务是否可用，返回 (ok, 描述信息)。Ollama 查 /api/tags，
+        OpenAI 兼容服务查 /models。仅允许 http/https。"""
+        base = self.config.base_url or self._default_base_url()
+        if not base.startswith(("http://", "https://")):
+            return False, "地址必须是 http/https"
+        try:
+            if self.config.provider == LLMProvider.OLLAMA:
+                session = requests.Session()
+                session.trust_env = False
+                r = session.get(f"{base}/api/tags", timeout=4)
+                r.raise_for_status()
+                models = [m.get("name", "") for m in r.json().get("models", [])]
+                model = self.config.model
+                if model and not any(m == model or m.split(":")[0] == model for m in models):
+                    return False, f"已连接，但找不到模型 {model}"
+                return True, "已连接"
+            r = requests.get(f"{base}/models", headers={"Authorization": f"Bearer {self.config.api_key}"}, timeout=6)
+            r.raise_for_status()
+            return True, "已连接"
+        except Exception as e:
+            return False, str(e)[:120]
+
+    def _normalize_messages_for_ollama(self, messages: List[Dict]) -> List[Dict]:
+        """Ollama 的 peg-native 引擎用 GGUF 内嵌模板渲染消息历史，而 GGUF 导入模型的
+        内嵌模板普遍缺 tool 段，导致 tool 角色消息渲染 400。这里把 tool 协议降级为
+        纯文本对话（工具调用与结果都以文本形式出现在 user/assistant 消息中），
+        self.messages 中的结构化消息不受影响。"""
+        norm = []
+        for m in messages:
+            role = m.get("role")
+            if role == "tool":
+                content = m.get("content", "")
+                if isinstance(content, list):
+                    content = " ".join(p.get("text", "") for p in content if isinstance(p, dict))
+                prev = norm[-1] if norm else None
+                if prev and prev.get("role") == "user" and str(prev.get("content", "")).startswith("[工具结果]"):
+                    prev["content"] += "\n[工具结果] " + str(content)
+                else:
+                    norm.append({"role": "user", "content": "[工具结果] " + str(content)})
+            elif role == "assistant" and m.get("tool_calls"):
+                parts = []
+                if m.get("content"):
+                    parts.append(str(m["content"]))
+                for tc in m["tool_calls"]:
+                    fn = tc.get("function", {})
+                    parts.append("[已调用工具] {0}({1})".format(fn.get("name", ""), fn.get("arguments", "")))
+                norm.append({"role": "assistant", "content": "\n".join(parts)})
+            else:
+                norm.append(dict(m))
+        return norm
+
     def _chat_ollama(self, messages: List[Dict], tools: List[Dict] = None) -> Dict:
         url = f"{self.config.base_url or 'http://localhost:11434'}/api/chat"
         payload = {
             "model": self.config.model,
-            "messages": messages,
+            "messages": self._normalize_messages_for_ollama(messages),
             "stream": False,
             "options": {"temperature": self.config.temperature}
         }
         if tools:
             payload["tools"] = [{"type": "function", "function": t["function"]} for t in tools]
-        r = requests.post(url, json=payload, timeout=120)
+        # 本地服务：trust_env=False 跳过环境变量与系统代理，避免 FastGithub 等代理残留劫持 localhost 请求
+        session = requests.Session()
+        session.trust_env = False
+        r = session.post(url, json=payload, timeout=120)
         r.raise_for_status()
         data = r.json()
         msg = data.get("message", {})
+        content = msg.get("content", "")
+        tool_calls = msg.get("tool_calls") or []
+        # 兼容层：GGUF 导入的模型常把工具调用输出为文本（```json {...}``` 或
+        # <tool_call>{...}</tool_call>），Ollama 解析不出结构化 tool_calls 时在客户端提取
+        if not tool_calls and content:
+            parsed = _extract_tool_call_from_text(content)
+            if parsed:
+                tool_calls = [parsed]
+                content = ""
         return {
             "role": "assistant",
-            "content": msg.get("content", ""),
-            "tool_calls": msg.get("tool_calls", [])
+            "content": content,
+            "tool_calls": tool_calls
         }
+
+
+def _extract_tool_call_from_text(text: str) -> Optional[Dict]:
+    """从模型文本输出中提取工具调用，兼容两种常见格式：
+    1. <tool_call>{"name": ..., "arguments": {...}}</tool_call>
+    2. ```json {"name": ..., "arguments": {...}} ```
+    没有工具调用时返回 None。
+    """
+    import re
+    raw = None
+    m = re.search(r'<tool_call>\s*(\{.*?\})\s*</tool_call>', text, re.S)
+    if m:
+        raw = m.group(1)
+    else:
+        m = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', text, re.S)
+        if m:
+            raw = m.group(1)
+        else:
+            t = text.strip()
+            if t.startswith('{') and t.endswith('}'):
+                raw = t
+    if not raw:
+        return None
+    try:
+        obj = json.loads(raw)
+    except (ValueError, TypeError):
+        return None
+    name = obj.get("name")
+    if not isinstance(name, str) or not name or "arguments" not in obj:
+        return None
+    args = obj["arguments"]
+    if isinstance(args, dict):
+        args = json.dumps(args, ensure_ascii=False)
+    return {"function": {"name": name, "arguments": args}}
 
 
 TOOLS_SCHEMA = [
@@ -322,16 +417,20 @@ def _type_text_with_space(text: str, interval: float = 0.05):
 
 
 def _open_app(app_name: str):
-    import subprocess
+    # 纯白名单启动：可执行名全部硬编码，模型输出只用于查表，杜绝命令注入
     app_map = {
-        "notepad": "notepad.exe",
-        "calc": "calc.exe",
-        "cmd": "cmd.exe",
-        "explorer": "explorer.exe",
-        "paint": "mspaint.exe",
+        "notepad": "notepad.exe", "记事本": "notepad.exe", "文本编辑器": "notepad.exe",
+        "calc": "calc.exe", "计算器": "calc.exe",
+        "cmd": "cmd.exe", "命令行": "cmd.exe", "命令提示符": "cmd.exe", "终端": "cmd.exe",
+        "explorer": "explorer.exe", "资源管理器": "explorer.exe", "文件管理器": "explorer.exe",
+        "paint": "mspaint.exe", "画图": "mspaint.exe", "画板": "mspaint.exe",
+        "控制面板": "control.exe", "任务管理器": "taskmgr.exe", "截图工具": "snippingtool.exe",
     }
-    exe = app_map.get(app_name.lower(), app_name)
-    subprocess.Popen(exe, shell=True)
+    exe = app_map.get(app_name.strip()) or app_map.get(app_name.strip().lower())
+    if not exe:
+        return ("错误: 仅支持打开以下应用: 记事本(notepad)、计算器(calc)、命令行(cmd)、"
+                "资源管理器(explorer)、画图(paint)、控制面板、任务管理器。请改用这些名称")
+    os.startfile(exe)  # ShellExecute 启动，exe 只能是上面白名单中的常量
     time.sleep(2)
     return f"opened {app_name}"
 
@@ -374,13 +473,13 @@ SYSTEM_PROMPT = """你是一个桌面自动化助手，可以通过工具控制�
 3. locate_on_screen 需要的是图片文件（.png），不是应用程序名称
 
 安全规则：
-1. 危险操作前先确认
+1. 不要执行任何危险或破坏性操作（删除文件、关闭系统、修改系统设置等）
 2. 连续操作间留出等待时间
 3. 坐标基于主屏幕左上角(0,0)
 4. 【重要】如果 locate_on_screen 返回"未找到图像"或"错误"，必须停止操作，绝对不要点击任何坐标
 5. 【重要】只有 locate_on_screen 返回 "found at (x, y)" 时才能继续点击操作
 
-收到用户指令后，规划步骤并调用工具。每步完成后汇报结果。"""
+收到用户指令后，规划步骤并调用工具。每步完成后简要汇报结果。任务完成后，用一句明确的话告诉用户结果（如"计算器已打开"）。"""
 
 
 class DesktopAgent:
@@ -389,31 +488,38 @@ class DesktopAgent:
         self.messages = [
             {"role": "system", "content": SYSTEM_PROMPT}
         ]
-        self.max_turns = 20
+        self.max_turns = 10
         self._image_located = False  # 追踪图像是否识别成功
+        self._stop_requested = False  # 用户请求停止
         self.on_tool_call = None      # 回调：工具调用前
         self.on_tool_result = None    # 回调：工具调用后
         self.on_log = None            # 回调：通用日志
+        self.current_turn = 0         # 当前轮次（供界面显示）
 
         # 如果没有传入 LLM，使用 None（会在 run 时创建）
         self.llm = llm
-        self.max_turns = 10  # 优化：减少循环次数
+
+    def stop(self):
+        """请求停止执行，在下一轮开始前生效"""
+        self._stop_requested = True
+
+    def _log(self, msg: str):
+        if self.on_log:
+            self.on_log(msg)
+        else:
+            print(msg)
 
     def run(self, user_input: str) -> str:
         self.messages.append({"role": "user", "content": user_input})
-        total_start = time.time()
 
         for turn in range(self.max_turns):
-            turn_start = time.time()
-            log_msg = f"\n--- 第 {turn+1} 轮 ---"
-            if self.on_log:
-                self.on_log(log_msg)
-            else:
-                print(log_msg)
+            if self._stop_requested:
+                return "已按要求停止执行。"
+            self.current_turn = turn + 1
+            self._log(f"\n── 第 {turn + 1}/{self.max_turns} 轮 ──")
 
-            # 如果没有 LLM，创建一个临时的
+            # 如果没有传入 LLM，创建一个本机 Ollama 客户端
             if self.llm is None:
-                from agent_loop import LLMProvider, LLMConfig
                 config = LLMConfig(
                     provider=LLMProvider.OLLAMA,
                     base_url="http://localhost:11434",
@@ -425,102 +531,68 @@ class DesktopAgent:
             # LLM 调用
             llm_start = time.time()
             resp = self.llm.chat(self.messages, TOOLS_SCHEMA)
-            llm_time = time.time() - llm_start
-            print(f"[耗时] LLM 响应: {llm_time:.2f}s")
+            self._log(f"思考用时 {time.time() - llm_start:.1f} 秒")
 
             self.messages.append(resp)
 
-            # 检查是否完成（没有工具调用 = 完成）
-            if not resp.get("tool_calls"):
-                if resp.get("content"):
-                    assistant_msg = f"[助手] {resp['content']}"
-                    if self.on_log:
-                        self.on_log(assistant_msg)
-                    else:
-                        print(assistant_msg)
-                    return resp["content"]
+            # 没有工具调用 = 模型给出了最终答复（或无有效输出，避免空转浪费轮次）
+            tool_calls = resp.get("tool_calls") or []
+            if not tool_calls:
+                content = resp.get("content", "")
+                if content:
+                    self._log(f"[助手] {content}")
+                    return content
+                return "模型未返回有效内容，请重试或换一种说法描述任务。"
 
-            # 处理工具调用
-            if resp.get("tool_calls"):
-                for tc in resp["tool_calls"]:
-                    tool_start = time.time()
-                    name = tc["function"]["name"]
-                    args = json.loads(tc["function"]["arguments"])
-
-                    # 调用工具调用回调
-                    if self.on_tool_call:
-                        self.on_tool_call(name, args)
-                    else:
-                        tool_msg = f"[调用工具] {name}({args})"
-                        print(tool_msg)
-
-                    # 安全拦截：图像识别失败后禁止点击
-                    if name == "click" and not self._image_located:
-                        result = "错误: 图像未识别成功，禁止点击操作"
-                        intercept_msg = f"[拦截] {result}"
-                        if self.on_log:
-                            self.on_log(intercept_msg)
-                        else:
-                            print(intercept_msg)
-                    elif name == "locate_on_screen":
-                        try:
-                            exec_start = time.time()
-                            result = TOOL_FUNCTIONS[name](args)
-                            exec_time = time.time() - exec_start
-                            print(f"[耗时] {name} 执行: {exec_time:.2f}s")
-
-                            # 调用工具结果回调
-                            if self.on_tool_result:
-                                self.on_tool_result(name, args, result)
-                            else:
-                                result_msg = f"[结果] {result}"
-                                print(result_msg)
-                            self._image_located = "found at" in str(result)
-                        except Exception as e:
-                            result = f"错误: {e}"
-                            error_msg = f"[错误] {result}"
-                            if self.on_log:
-                                self.on_log(error_msg)
-                            else:
-                                print(error_msg)
-                            self._image_located = False
-                    else:
-                        try:
-                            exec_start = time.time()
-                            result = TOOL_FUNCTIONS[name](args)
-                            exec_time = time.time() - exec_start
-                            print(f"[耗时] {name} 执行: {exec_time:.2f}s")
-
-                            # 调用工具结果回调
-                            if self.on_tool_result:
-                                self.on_tool_result(name, args, result)
-                            else:
-                                result_msg = f"[结果] {result}"
-                                print(result_msg)
-                        except Exception as e:
-                            result = f"错误: {e}"
-                            error_msg = f"[错误] {result}"
-                            if self.on_log:
-                                self.on_log(error_msg)
-                            else:
-                                print(error_msg)
-
-                    self.messages.append({
-                        "role": "tool",
-                        "tool_call_id": tc["id"],
-                        "content": [{"type": "text", "text": str(result)}]
-                    })
-                continue
-
-            if resp.get("content"):
-                assistant_msg = f"[助手] {resp['content']}"
-                if self.on_log:
-                    self.on_log(assistant_msg)
+            for tc in tool_calls:
+                if self._stop_requested:
+                    return "已按要求停止执行。"
+                name = tc["function"]["name"]
+                raw_args = tc["function"]["arguments"]
+                if isinstance(raw_args, str):
+                    try:
+                        args = json.loads(raw_args)
+                    except (ValueError, TypeError):
+                        args = {}
                 else:
-                    print(assistant_msg)
-                return resp["content"]
+                    args = raw_args or {}
 
-        return "达到最大轮次限制"
+                if self.on_tool_call:
+                    self.on_tool_call(name, args)
+                else:
+                    self._log(f"[调用工具] {name} {args}")
+
+                # 安全拦截：图像识别失败后禁止点击
+                if name == "click" and not self._image_located:
+                    result = "错误: 图像未识别成功，禁止点击操作"
+                    self._log(f"[拦截] {result}")
+                else:
+                    try:
+                        exec_start = time.time()
+                        result = TOOL_FUNCTIONS[name](args)
+                        self._log(f"工具执行用时 {time.time() - exec_start:.1f} 秒")
+                        if name == "locate_on_screen":
+                            self._image_located = "found at" in str(result)
+                    except KeyError:
+                        result = f"错误: 未知工具 {name}"
+                        self._log(f"[错误] {result}")
+                    except Exception as e:
+                        result = f"错误: {e}"
+                        self._log(f"[错误] {result}")
+
+                if self.on_tool_result:
+                    self.on_tool_result(name, args, result)
+                else:
+                    self._log(f"[结果] {result}")
+
+                self.messages.append({
+                    "role": "tool",
+                    # Ollama 的 tool_calls 无 id 字段；content 需为纯文本（Ollama /api/chat 不接受数组格式）
+                    "tool_call_id": tc.get("id", ""),
+                    "content": str(result)
+                })
+
+        return "已达到最大轮次限制，任务未完成。请尝试把任务描述得更简单一些。"
 
 
 def load_config() -> LLMConfig:
