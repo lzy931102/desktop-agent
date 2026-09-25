@@ -79,6 +79,27 @@ python test_calculator_e2e.py
 python test_browser_e2e.py
 ```
 
+## 下载与安装
+
+### 下载
+
+1. 打开 [Releases 页面](https://github.com/lzy931102/desktop-agent/releases)
+2. 找到最新版本（如 v2.0.1）
+3. 在 "Assets" 区域，点击 `DesktopAgent.exe` 下载
+4. 下载完成后，双击运行
+
+> 💡 如果点击下载链接后页面空白，是正常的——文件会自动下载，去浏览器"下载"列表查看。
+
+### 安装 Ollama
+
+1. 下载 Ollama：https://ollama.com/download
+2. 安装并启动
+3. 拉取模型：ollama pull qwen2.5-coder:7b
+
+### 运行
+
+双击 `DesktopAgent.exe`，输入任务，点击"开始执行"。
+
 ## GUI 使用
 
 ### 启动 GUI

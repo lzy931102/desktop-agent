@@ -342,12 +342,18 @@ class AgentGUI:
             self._set_status("⚠", "请先输入任务", "告诉我你想做什么，例如：打开计算器",
                              color=WARN, card=CARD)
             return
+        self._submit_task(task)
+
+    def _submit_task(self, task: str):
+        """提交任务执行（GUI 按钮 / 命令行 --run / 定时触发共用入口）"""
+        if self.is_running:
+            return False
         if self.ollama_ok is False:
             self._log_line("time", time.strftime("%H:%M:%S") + "  Ollama 未连接，正在重新检测…")
             threading.Thread(target=self._check_connection, daemon=True).start()
             self._set_status("⚠", "连不上本地 Ollama", "请确认 Ollama 已启动，我正在重新检测…",
                              color=WARN, card=CARD_ERR)
-            return
+            return False
 
         self.is_running = True
         self.run_start_time = time.time()
@@ -363,6 +369,7 @@ class AgentGUI:
             self._log_line("warning", "⚠️ 云端模式：本次任务的屏幕数据会上传到模型服务商")
         self._log_line("time", time.strftime("%H:%M:%S") + "  📋 任务：" + task)
         threading.Thread(target=self._run_agent, args=(task,), daemon=True).start()
+        return True
 
     def _finish(self, ok: bool, text: str, stopped=False):
         """任务结束（成功/失败/停止）统一收尾"""
@@ -970,4 +977,11 @@ if __name__ == "__main__":
     if len(sys.argv) >= 3 and sys.argv[1] == "--debug-open":
         panel = sys.argv[2]  # settings / scheduler / history
         app.root.after(1500, getattr(app, f"_show_{panel}"))
+    if len(sys.argv) >= 3 and sys.argv[1] == "--run":
+        task = " ".join(sys.argv[2:])
+        # 等连接检测完成（2 秒）后自动提交任务（命令行触发入口）
+        def _auto():
+            app._submit_task(task)
+            app.root.deiconify()
+        app.root.after(2500, _auto)
     app.root.mainloop()
