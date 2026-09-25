@@ -35,7 +35,7 @@ INPUT_BG = "#374151"    # 输入框背景（gray-700）
 ACCENT = "#3B82F6"      # 主色（blue-500）
 ACCENT_HOVER = "#2563EB"
 TEXT = "#F3F4F6"        # 正文（gray-100）
-MUTED = "#9CA3AF"       # 次要文字（gray-400，对比度 7:1）
+MUTED = "#D1D5DB"       # 次要文字（gray-300，footer/提示均清晰可读）
 OK = "#34D399"          # 成功（emerald-400）
 ERR = "#F87171"         # 错误（red-400）
 WARN = "#FBBF24"        # 警告（amber-400）
@@ -54,7 +54,7 @@ TOOL_NAMES = {
     "analyze_screen": "看屏幕", "list_windows": "查看窗口列表",
     "focus_window": "切换窗口", "list_ui_elements": "查看窗口控件",
     "click_ui_element": "点击控件", "clipboard_read": "读取剪贴板",
-    "clipboard_write": "写入剪贴板",
+    "clipboard_write": "写入剪贴板", "verify_message_sent": "确认消息已发出",
 }
 
 EXAMPLES = ["打开计算器", "打开记事本，输入 你好", "截取屏幕"]
@@ -216,7 +216,7 @@ class AgentGUI:
         except Exception:
             pass
         for tag, color in (
-            ("time", TURN), ("turn", "#C7CBD1"), ("info", TEXT),
+            ("time", "#D1D5DB"), ("turn", "#C7CBD1"), ("info", TEXT),
             ("assistant", "#FFFFFF"), ("tool", TOOLC), ("result", RESULTC),
             ("error", ERR), ("warning", WARN), ("muted", "#B9C0C9"),
             ("success", OK),
@@ -264,7 +264,7 @@ class AgentGUI:
             fg_color=INPUT_BG, border_width=1, border_color=BORDER, wrap="word",
         )
         self.input_text.pack(side="left", fill="both", expand=True)
-        self.input_text.tag_config("ph", foreground="#9CA3AF")
+        self.input_text.tag_config("ph", foreground="#D1D5DB")
         self.input_text.insert("1.0", PLACEHOLDER, "ph")
         self.input_text.bind("<FocusIn>", self._clear_placeholder)
         self.input_text.bind("<FocusOut>", self._restore_placeholder)
