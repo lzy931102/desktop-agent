@@ -33,10 +33,17 @@ from core import guard
 from core import verify as core_verify
 from core.approval import AutoDenyPolicy
 from core.audit import AuditLogger
+from core.feishu import send_feishu_message as _feishu_send
 from core.history import TaskHistory
 from core.retry import run_with_retry
-from core.settings import PROVIDER_ENUM, resolve_api_key, validate_public_https
+from core.settings import PROVIDER_ENUM, Settings, resolve_api_key, validate_public_https
 from core.verify import check_message_sent
+
+
+def _send_feishu_impl(text: str) -> str:
+    """发飞书群消息的 Agent 工具实现：webhook 取自本机设置"""
+    ok, detail = _feishu_send(text, Settings().get("feishu_webhook", ""))
+    return f"已发送到飞书群（{detail}）：{text}" if ok else f"错误: {detail}"
 
 
 class LLMProvider(Enum):
@@ -601,6 +608,20 @@ TOOLS_SCHEMA = [
     {
         "type": "function",
         "function": {
+            "name": "send_feishu_message",
+            "description": "把一条文本消息发到用户的飞书群（手机和电脑同步可见）。凡是涉及飞书的通知、留言、发消息类任务，优先用这个工具直接发送，不要去操作飞书界面。未配置 Webhook 时会返回配置指引",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "text": {"type": "string", "description": "要发送的消息内容"}
+                },
+                "required": ["text"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "get_mouse_position",
             "description": "获取当前鼠标坐标",
             "parameters": {"type": "object", "properties": {}}
@@ -697,6 +718,7 @@ TOOL_FUNCTIONS = {
     "clipboard_read": lambda args: _clipboard_read_impl(),
     "clipboard_write": lambda args: _clipboard_write_impl(args["text"]),
     "verify_message_sent": lambda args: check_message_sent(args["expected_text"]),
+    "send_feishu_message": lambda args: _send_feishu_impl(args["text"]),
 }
 
 
@@ -727,6 +749,8 @@ SYSTEM_PROMPT = """你是一个电脑操作助手，通过工具帮用户完成�
 - press_key(key) / hotkey(keys): 按键与组合键；scroll(clicks): 滚动；move_to(x, y): 移动鼠标
 - clipboard_read() / clipboard_write(text): 读写剪贴板
 - verify_message_sent(expected_text): 发消息后验证消息是否真的出现在聊天窗口
+- send_feishu_message(text): 把消息直接发到用户的飞书群（手机电脑同步可见）。
+  飞书相关的通知/发消息任务首选这个工具，比操作飞书界面快且可靠
 - locate_on_screen(image_path): 用模板图片找位置（需要预先准备好的png）
 - wait(seconds): 等待；screenshot(path): 截图保存
 

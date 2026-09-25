@@ -55,6 +55,7 @@ TOOL_NAMES = {
     "focus_window": "切换窗口", "list_ui_elements": "查看窗口控件",
     "click_ui_element": "点击控件", "clipboard_read": "读取剪贴板",
     "clipboard_write": "写入剪贴板", "verify_message_sent": "确认消息已发出",
+    "send_feishu_message": "发飞书消息",
 }
 
 EXAMPLES = ["打开计算器", "打开记事本，输入 你好", "截取屏幕"]
@@ -671,7 +672,7 @@ class AgentGUI:
     def _show_settings(self):
         dlg = ctk.CTkToplevel(self.root, fg_color=BG)
         dlg.title("设置")
-        dlg.geometry("620x760")
+        dlg.geometry("620x860")
         dlg.grab_set()
 
         body = ctk.CTkFrame(dlg, fg_color="transparent")
@@ -817,6 +818,22 @@ class AgentGUI:
                       progress_color=ACCENT, text_color=TEXT,
                       font=ctk.CTkFont(size=12)).pack(anchor="w", pady=(14, 0))
 
+        # ---- 飞书群通知（电脑↔手机连接） ----
+        feishu_var = ctk.StringVar(value=self.settings.get("feishu_webhook", ""))
+        feishu_box = ctk.CTkFrame(body, fg_color=CARD, corner_radius=10,
+                                  border_width=1, border_color=BORDER)
+        feishu_box.pack(fill="x", pady=(14, 0))
+        ctk.CTkLabel(feishu_box, text="飞书群通知（电脑↔手机）",
+                     font=ctk.CTkFont(size=12, weight="bold"),
+                     text_color=TEXT).pack(anchor="w", padx=14, pady=(10, 2))
+        ctk.CTkLabel(feishu_box, text="粘贴群机器人的 Webhook 地址后，Agent 可直接给飞书群发消息",
+                     font=ctk.CTkFont(size=11), text_color=MUTED).pack(
+            anchor="w", padx=14)
+        ctk.CTkEntry(feishu_box, textvariable=feishu_var, width=560,
+                     placeholder_text="https://open.feishu.cn/open-apis/bot/v2/hook/…",
+                     fg_color=INPUT_BG, border_color=BORDER).pack(
+            anchor="w", padx=14, pady=(6, 12))
+
         def save():
             self.settings.set("model_mode", mode_var.get())
             self.settings.set("local", {**self.settings.get("local", {}),
@@ -830,6 +847,7 @@ class AgentGUI:
                 "model": cmodel_var.get().strip(),
             })
             self.settings.set("minimize_to_tray", bool(tray_var.get()))
+            self.settings.set("feishu_webhook", feishu_var.get().strip())
             self._log_line("info", f"⚙ 设置已保存：模式 {mode_var.get()}")
             self._check_connection_async()
             self._sync_privacy_banner()

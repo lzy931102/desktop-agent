@@ -244,6 +244,10 @@ def click_ui_element(window_title: str, name: str) -> str:
         target_list = exact or partial
         target_list = [c for c in target_list if c.rectangle().width() > 0]
         if not target_list:
+            if not candidates:
+                return (f"错误: 窗口「{win.window_text()}」没有任何可枚举的标准控件"
+                        f"（自绘界面）。不要再用 click_ui_element，改用 analyze_screen "
+                        f"看清界面后用 click(x,y) 坐标点击")
             names = "、".join({c.window_text().strip() for c in candidates
                                if c.window_text().strip()})[:200]
             return (f"错误: 窗口「{win.window_text()}」中找不到名为「{name}」的控件。"

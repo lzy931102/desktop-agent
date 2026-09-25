@@ -27,6 +27,7 @@ DEFAULTS = {
         "model": "glm-4-flash",
     },
     "minimize_to_tray": True,
+    "feishu_webhook": "",  # 飞书群自定义机器人 Webhook（电脑↔手机消息通道）
 }
 
 # 云端服务商预设与对应的环境变量名
