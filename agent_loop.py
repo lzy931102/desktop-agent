@@ -43,7 +43,7 @@ from core.verify import check_message_sent
 def _send_feishu_impl(text: str) -> str:
     """发飞书群消息的 Agent 工具实现：webhook 取自本机设置"""
     ok, detail = _feishu_send(text, Settings().get("feishu_webhook", ""))
-    return f"已发送到飞书群（{detail}）：{text}" if ok else f"错误: {detail}"
+    return f"已发送到飞书群：{text}" if ok else f"错误: {detail}"
 
 
 class LLMProvider(Enum):
