@@ -24,23 +24,25 @@ OLLAMA_URL = "http://localhost:11434"
 MODEL_NAME = "qwen2.5-coder:7b"
 MAX_TURNS = 10
 
-# ---------------- 配色（深色主题） ----------------
-BG = "#1B1B1B"          # 窗口背景
-CARD = "#222222"        # 卡片背景
-CARD_OK = "#1D2B23"     # 成功状态卡
-CARD_ERR = "#2B1D1D"    # 失败状态卡
-CARD_RUN = "#1D242B"    # 执行中状态卡
-BORDER = "#333333"
-INPUT_BG = "#242424"
-ACCENT = "#3B82F6"
-ACCENT_HOVER = "#2F6FDB"
-TEXT = "#EAEAEA"
-MUTED = "#8F8F8F"
-OK = "#2CC985"
-ERR = "#FF6B6B"
-WARN = "#FFB800"
-TOOLC = "#6AB0F3"
-TURN = "#707070"
+# ---------------- 配色（深色主题 · WCAG AA ≥ 4.5:1） ----------------
+BG = "#111827"          # 窗口背景（gray-900）
+CARD = "#1F2937"        # 卡片背景（gray-800），与主背景明确分区
+CARD_OK = "#064E3B"     # 成功状态卡（emerald-900）
+CARD_ERR = "#7F1D1D"    # 失败状态卡（red-900）
+CARD_RUN = "#172554"    # 执行中状态卡（blue-950）
+BORDER = "#4B5563"      # 边框（gray-600），比卡片亮一档保证可见
+INPUT_BG = "#374151"    # 输入框背景（gray-700）
+ACCENT = "#3B82F6"      # 主色（blue-500）
+ACCENT_HOVER = "#2563EB"
+TEXT = "#F3F4F6"        # 正文（gray-100）
+MUTED = "#9CA3AF"       # 次要文字（gray-400，对比度 7:1）
+OK = "#34D399"          # 成功（emerald-400）
+ERR = "#F87171"         # 错误（red-400）
+WARN = "#FBBF24"        # 警告（amber-400）
+AMBER = "#FCD34D"       # 隐私条文字（amber-300）
+TOOLC = "#60A5FA"       # 工具调用（blue-400）
+TURN = "#9CA3AF"        # 轮次分隔（gray-400）
+RESULTC = "#D1D5DB"     # 工具结果（gray-300）
 
 PLACEHOLDER = "用一句话描述你想让我做什么，例如：打开记事本，输入 Hello"
 
@@ -152,7 +154,7 @@ class AgentGUI:
             ctk.CTkButton(
                 bar, text=text, width=64, height=24, corner_radius=6,
                 fg_color="transparent", border_width=1, border_color=BORDER,
-                text_color=MUTED, hover_color="#2A2A2A",
+                text_color=MUTED, hover_color="#374151",
                 font=ctk.CTkFont(size=12), command=cmd,
             ).pack(side="right", padx=(0, 8))
 
@@ -198,33 +200,46 @@ class AgentGUI:
         self.clear_btn = ctk.CTkButton(
             head, text="清空", width=52, height=22, corner_radius=6,
             fg_color="transparent", border_width=1, border_color=BORDER,
-            text_color=MUTED, hover_color="#2A2A2A",
+            text_color=MUTED, hover_color="#374151",
             font=ctk.CTkFont(size=11), command=self._clear_log,
         )
         self.clear_btn.pack(side="right")
 
         self.log_text = ctk.CTkTextbox(
             wrap, font=ctk.CTkFont(family="Consolas", size=12),
-            fg_color="#191919", corner_radius=8, wrap="word", state="disabled",
+            fg_color="#111827", corner_radius=8, wrap="word", state="disabled",
         )
         self.log_text.pack(fill="both", expand=True, padx=12, pady=(8, 12))
+        try:
+            # 日志行间距 +2px（CTkTextbox 未暴露，直接配置内部 tk.Text）
+            self.log_text._textbox.configure(spacing1=2)
+        except Exception:
+            pass
         for tag, color in (
-            ("time", TURN), ("turn", TURN), ("info", TEXT),
-            ("assistant", TEXT), ("tool", TOOLC), ("result", "#B9B9B9"),
-            ("error", ERR), ("warning", WARN), ("muted", "#666666"),
+            ("time", TURN), ("turn", "#C7CBD1"), ("info", TEXT),
+            ("assistant", "#FFFFFF"), ("tool", TOOLC), ("result", RESULTC),
+            ("error", ERR), ("warning", WARN), ("muted", "#B9C0C9"),
             ("success", OK),
         ):
-            # customtkinter 的 tag_config 不允许 font 选项（与缩放冲突），只着色
+            # customtkinter 的 tag_config 不允许 font 选项，加粗通过内部 tk.Text 设置
             self.log_text.tag_config(tag, foreground=color)
+        for bold_tag in ("assistant", "success", "tool"):
+            try:
+                self.log_text._textbox.tag_config(
+                    bold_tag, foreground={"assistant": "#FFFFFF", "success": OK,
+                                          "tool": TOOLC}[bold_tag],
+                    font=("Consolas", 12, "bold"))
+            except Exception:
+                pass
         self._log_welcome()
 
     def _log_welcome(self):
         """首次打开时的引导信息"""
         self.log_text.configure(state="normal")
         self.log_text.insert("end", "👋 你好，我是你的桌面助手\n", "assistant")
-        self.log_text.insert("end", "   在下方输入你想做的事，我会一步步操作电脑并记录在这里。\n", "muted")
-        self.log_text.insert("end", "   例如：「打开计算器」「打开记事本，输入 你好」\n", "muted")
-        self.log_text.insert("end", "   高风险操作（删除、关闭窗口等）我会先征求你的同意。\n", "muted")
+        self.log_text.insert("end", "   在下方输入你想做的事，我会一步步操作电脑并记录在这里。\n", "info")
+        self.log_text.insert("end", "   例如：「打开计算器」「打开记事本，输入 你好」\n", "info")
+        self.log_text.insert("end", "   高风险操作（删除、关闭窗口等）我会先征求你的同意。\n", "info")
         self.log_text.configure(state="disabled")
 
     def _build_chips(self):
@@ -235,7 +250,7 @@ class AgentGUI:
         for text in EXAMPLES:
             ctk.CTkButton(
                 row, text=text, width=10, height=24, corner_radius=12,
-                fg_color="#262626", hover_color="#303030", text_color="#BBBBBB",
+                fg_color="#1F2937", hover_color="#374151", text_color="#D1D5DB",
                 font=ctk.CTkFont(size=12),
                 command=lambda t=text: self._use_example(t),
             ).pack(side="left", padx=(8, 0))
@@ -249,7 +264,7 @@ class AgentGUI:
             fg_color=INPUT_BG, border_width=1, border_color=BORDER, wrap="word",
         )
         self.input_text.pack(side="left", fill="both", expand=True)
-        self.input_text.tag_config("ph", foreground="#6A6A6A")
+        self.input_text.tag_config("ph", foreground="#9CA3AF")
         self.input_text.insert("1.0", PLACEHOLDER, "ph")
         self.input_text.bind("<FocusIn>", self._clear_placeholder)
         self.input_text.bind("<FocusOut>", self._restore_placeholder)
@@ -266,10 +281,10 @@ class AgentGUI:
     def _build_privacy_banner(self):
         """云端模式的隐私提示条（本地模式为空文本不占视觉）"""
         self.privacy_banner = ctk.CTkLabel(
-            self.root, text="", font=ctk.CTkFont(size=11),
-            text_color=WARN, fg_color="#2B2317", corner_radius=8,
+            self.root, text="", font=ctk.CTkFont(size=11, weight="bold"),
+            text_color=AMBER, fg_color="#78350F", corner_radius=8,
         )
-        self.privacy_banner.pack(fill="x", padx=24, pady=(0, 6), ipady=3)
+        self.privacy_banner.pack(fill="x", padx=24, pady=(0, 6), ipady=4)
 
     def _sync_privacy_banner(self):
         mode = self.settings.get("model_mode", "local")
@@ -339,8 +354,8 @@ class AgentGUI:
         self.current_turn = 0
         self._set_status("🧠", "开始执行…", "正在和模型沟通任务，请稍候",
                          color=TEXT, card=CARD_RUN)
-        self.start_button.configure(text="⏹ 停止", fg_color="#7A3B3B",
-                                    hover_color="#964646")
+        self.start_button.configure(text="⏹ 停止", fg_color="#DC2626",
+                                    hover_color="#B91C1C")
         self.input_text.configure(state="disabled")
         self._update_tray("Desktop Agent · 执行中")
         mode = self.settings.get("model_mode", "local")
@@ -472,8 +487,8 @@ class AgentGUI:
                     self.current_turn = 0
                     self._set_status("🧠", "开始执行定时任务…", payload,
                                      color=TEXT, card=CARD_RUN)
-                    self.start_button.configure(text="⏹ 停止", fg_color="#7A3B3B",
-                                                hover_color="#964646")
+                    self.start_button.configure(text="⏹ 停止", fg_color="#DC2626",
+                                                hover_color="#B91C1C")
                     self.input_text.configure(state="disabled")
                     self._update_tray("Desktop Agent · 执行中")
                     threading.Thread(target=self._run_agent, args=(payload,),
@@ -543,7 +558,7 @@ class AgentGUI:
         btns.pack(fill="x", pady=(14, 0))
         ctk.CTkButton(
             btns, text="✗ 拒绝", width=130, height=38, corner_radius=8,
-            fg_color="#7A3B3B", hover_color="#964646",
+            fg_color="#DC2626", hover_color="#B91C1C",
             font=ctk.CTkFont(size=13, weight="bold"),
             command=lambda: self._answer_confirm(dlg, req, False),
         ).pack(side="right")
@@ -579,7 +594,7 @@ class AgentGUI:
                      font=ctk.CTkFont(size=10), text_color=MUTED).pack(side="right")
 
         box = ctk.CTkTextbox(dlg, font=ctk.CTkFont(family="Consolas", size=12),
-                             fg_color="#191919", corner_radius=10, wrap="word",
+                             fg_color="#111827", corner_radius=10, wrap="word",
                              state="disabled")
         box.pack(fill="both", expand=True, padx=18, pady=(0, 16))
         rows = self.history.recent(50)
@@ -768,7 +783,7 @@ class AgentGUI:
             threading.Thread(target=work, daemon=True).start()
 
         ctk.CTkButton(test_row, text="测试连接", width=100, height=26,
-                      corner_radius=6, fg_color="#2A2A2A", hover_color="#333333",
+                      corner_radius=6, fg_color="#374151", hover_color="#4B5563",
                       text_color=TEXT, command=run_test).pack(side="left")
         test_result.pack(side="left", padx=10)
         if env_hint:
@@ -880,7 +895,7 @@ class AgentGUI:
         # ---- 任务列表 ----
         ctk.CTkLabel(body, text="现有任务", font=ctk.CTkFont(size=12),
                      text_color=MUTED).pack(anchor="w", pady=(6, 2))
-        self.sched_list_frame = ctk.CTkFrame(body, fg_color="#191919", corner_radius=10)
+        self.sched_list_frame = ctk.CTkFrame(body, fg_color="#111827", corner_radius=10)
         self.sched_list_frame.pack(fill="both", expand=True)
         self._render_sched_list(self.sched_list_frame)
         body.pack_configure(expand=True)
@@ -911,7 +926,7 @@ class AgentGUI:
                          font=ctk.CTkFont(size=12), text_color=MUTED).pack(pady=16)
             return
         for t in tasks:
-            row = ctk.CTkFrame(parent, fg_color="#222222", corner_radius=8)
+            row = ctk.CTkFrame(parent, fg_color="#1F2937", corner_radius=8)
             row.pack(fill="x", padx=10, pady=4)
             mark = "🟢" if t.get("enabled") else "⚪"
             last = time.strftime("%m-%d %H:%M", time.localtime(t["last_run"])) \
@@ -924,14 +939,14 @@ class AgentGUI:
             btns = ctk.CTkFrame(row, fg_color="transparent")
             btns.pack(side="right", padx=8)
             ctk.CTkButton(btns, text="禁用" if t.get("enabled") else "启用", width=48,
-                          height=22, corner_radius=6, fg_color="#2A2A2A",
-                          hover_color="#333333", text_color=TEXT,
+                          height=22, corner_radius=6, fg_color="#374151",
+                          hover_color="#4B5563", text_color=TEXT,
                           command=lambda tid=t["id"], en=not t.get("enabled"), d=parent:
                           (self.scheduler.set_enabled(tid, en),
                            [c.destroy() for c in d.winfo_children()],
                            self._render_sched_list(d))).pack(side="left", padx=2)
             ctk.CTkButton(btns, text="删除", width=48, height=22, corner_radius=6,
-                          fg_color="#7A3B3B", hover_color="#964646", text_color=TEXT,
+                          fg_color="#DC2626", hover_color="#B91C1C", text_color=TEXT,
                           command=lambda tid=t["id"], d=parent:
                           (self.scheduler.remove(tid),
                            [c.destroy() for c in d.winfo_children()],
