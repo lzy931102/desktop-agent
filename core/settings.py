@@ -46,13 +46,19 @@ PROVIDER_ENUM = {"zhipu": "zhipu", "deepseek": "deepseek", "openai": "openai",
                  "tongyi": "other"}
 
 
-def resolve_api_key(cloud_cfg: dict) -> str:
-    """解析云端 API Key：环境变量优先，其次本机 settings.json 里保存的值"""
+def resolve_api_key(cloud_cfg: dict) -> tuple:
+    """解析云端 API Key，返回 (key, source)。
+
+    优先级：settings.json 里显式保存的值（用户最近配置）> 环境变量（兜底）。
+    """
     env_name = next((p["env"] for p in CLOUD_PRESETS.values()
                      if p["provider"] == cloud_cfg.get("provider")), None)
+    saved = str(cloud_cfg.get("api_key", "") or "").strip()
+    if saved:
+        return saved, "settings"
     if env_name and os.environ.get(env_name):
-        return os.environ[env_name]
-    return str(cloud_cfg.get("api_key", "") or "")
+        return os.environ[env_name], "env"
+    return "", ""
 
 
 def validate_public_https(url: str) -> tuple:

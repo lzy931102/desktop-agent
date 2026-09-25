@@ -298,7 +298,7 @@ def build_llm_client(settings, on_fallback=None):
         return local_client
 
     cloud_cfg_dict = dict(settings.get("cloud", {}))
-    cloud_cfg_dict["api_key"] = resolve_api_key(cloud_cfg_dict)
+    cloud_cfg_dict["api_key"], _key_src = resolve_api_key(cloud_cfg_dict)
     provider_value = PROVIDER_ENUM.get(cloud_cfg_dict.get("provider", "zhipu"), "other")
     if not cloud_cfg_dict["api_key"]:
         if mode == "cloud":
