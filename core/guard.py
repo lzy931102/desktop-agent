@@ -51,12 +51,13 @@ RULES = [
 
 
 # 可安全重试的工具（幂等或只读操作）；不在清单内的失败交回模型决策
+# analyze_screen 不重试：单次调用可达 1-2 分钟，重试只会加倍等待，失败应让模型换快速通道
 RETRYABLE_TOOLS = {
     "click", "type_text", "press_key", "hotkey", "move_to", "scroll",
     "screenshot", "open_app", "wait", "list_windows", "focus_window",
     "list_ui_elements", "click_ui_element", "clipboard_read",
     "clipboard_write", "get_mouse_position", "get_screen_size",
-    "analyze_screen", "locate_on_screen",
+    "locate_on_screen",
 }
 
 

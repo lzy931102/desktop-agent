@@ -56,7 +56,7 @@ class ScreenVision:
             self._available = False
         return self._available
 
-    def ask(self, question: str, timeout: int = 150) -> str:
+    def ask(self, question: str, timeout: int = 90) -> str:
         """截取当前屏幕，让视觉模型回答问题"""
         if pyautogui is None:
             return "错误: pyautogui 不可用，无法截屏"
@@ -68,12 +68,12 @@ class ScreenVision:
         except Exception as e:
             return f"错误: 截屏失败 - {e}"
 
-        # 缩到 1280 宽，控制传输与推理耗时
+        # 缩到 1024 宽，控制传输与推理耗时
         w, h = img.size
-        if w > 1280:
-            img = img.resize((1280, int(h * 1280 / w)))
+        if w > 1024:
+            img = img.resize((1024, int(h * 1024 / w)))
         buf = io.BytesIO()
-        img.convert("RGB").save(buf, format="JPEG", quality=85)
+        img.convert("RGB").save(buf, format="JPEG", quality=80)
         b64 = base64.b64encode(buf.getvalue()).decode()
 
         try:
@@ -86,6 +86,9 @@ class ScreenVision:
             r.raise_for_status()
             text = r.json().get("message", {}).get("content", "").strip()
             return text or "视觉模型没有返回内容"
+        except requests.exceptions.Timeout:
+            return ("错误: 视觉分析超时（90 秒）。改用 list_windows 看有哪些窗口、"
+                    "list_ui_elements 看窗口控件，比看屏快得多")
         except Exception as e:
             return f"错误: 视觉分析失败 - {e}"
 
@@ -179,6 +182,64 @@ def _find_window_wrapper(desktop, title=None):
     return (wins[0], None) if wins else (None, "错误: 没有可见窗口")
 
 
+def _menu_popups():
+    """当前打开的 Win32 菜单弹窗（#32768 独立顶层窗口，不在主窗口控件树里）。
+
+    点开「格式」这类菜单后，菜单项必须来这里找——记事本格式→字体 即此场景。
+    """
+    pops = []
+    try:
+        from pywinauto import Application, Desktop
+        for w in Desktop(backend="win32").windows(class_name="#32768"):
+            try:
+                if not w.is_visible():
+                    continue
+                app = Application(backend="uia").connect(handle=w.handle, timeout=1)
+                pops.append(app.window(handle=w.handle))
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return pops
+
+
+def _menu_items_win32(hwnd):
+    """经典 Win32 菜单树（无需点开菜单）：[(文本, 命令ID, 完整路径)]。
+
+    pywinauto 两个后端都枚举不到 #32768 菜单弹窗，这里直接走 GetMenu API，
+    是「格式→字体」这类经典菜单唯一可靠的枚举/点击通道。
+    """
+    u32 = ctypes.windll.user32
+    root = u32.GetMenu(hwnd)
+    if not root:
+        return []
+    out = []
+
+    def menu_text(hmenu, i):
+        n = u32.GetMenuStringW(hmenu, i, None, 0, 0x400)  # MF_BYPOSITION
+        if n <= 0:
+            return ""
+        buf = ctypes.create_unicode_buffer(n + 1)
+        u32.GetMenuStringW(hmenu, i, buf, n + 1, 0x400)
+        return buf.value
+
+    def walk(hmenu, path):
+        count = u32.GetMenuItemCount(hmenu)
+        if count <= 0:
+            return
+        for i in range(count):
+            text = menu_text(hmenu, i).split("\t")[0]  # 去掉快捷键后缀，展示更干净
+            sub = u32.GetSubMenu(hmenu, i)
+            nid = u32.GetMenuItemID(hmenu, i)
+            if text:
+                out.append((text, nid, " → ".join(path + [text])))
+            if sub and len(path) < 3:
+                walk(sub, path + [text])
+
+    walk(root, [])
+    return out
+
+
 def list_ui_elements(window_title: str = "", limit: int = 40) -> str:
     """列出窗口内可操作控件（类型/名称/精确坐标）——元素级定位的主力工具"""
     desktop = _pywinauto_desktop()
@@ -187,6 +248,7 @@ def list_ui_elements(window_title: str = "", limit: int = 40) -> str:
     win, err = _find_window_wrapper(desktop, window_title or None)
     if err:
         return err
+    pops = _menu_popups()  # 打开中的菜单弹窗（如 记事本 格式→字体）
     try:
         found = []
         for ctype in UIA_TYPES:
@@ -194,7 +256,7 @@ def list_ui_elements(window_title: str = "", limit: int = 40) -> str:
                 found.extend(win.descendants(control_type=ctype))
             except Exception:
                 pass
-        if not found:
+        if not found and not pops:
             return (f"窗口「{win.window_text()}」中没有发现标准控件"
                     f"（可能是自绘界面），建议改用 analyze_screen 了解界面内容")
         lines = [f"窗口「{win.window_text()}」的可操作控件："]
@@ -217,7 +279,36 @@ def list_ui_elements(window_title: str = "", limit: int = 40) -> str:
                 count += 1
             except Exception:
                 continue
-        return "\n".join(lines) if count else "未发现带名称的可操作控件"
+        # 打开中的菜单：菜单项单独列出（主窗口控件树里看不到）
+        for p in pops:
+            try:
+                items = p.descendants(control_type="MenuItem")
+            except Exception:
+                continue
+            menu_lines = []
+            for it in items:
+                try:
+                    txt = it.window_text().strip()
+                    r = it.rectangle()
+                    if not txt or r.width() <= 0:
+                        continue
+                    menu_lines.append(
+                        f"- [MenuItem] {txt}  中心({(r.left + r.right) // 2},{(r.top + r.bottom) // 2})")
+                except Exception:
+                    continue
+            if menu_lines:
+                lines.append("打开的菜单里的项（可直接 click_ui_element 点击）：")
+                lines.extend(menu_lines[:15])
+        # 经典菜单树（GetMenu API）：无需点开菜单即可列出全部层级
+        try:
+            tree_lines = [f"- [Menu] {path}"
+                          for _t, _nid, path in _menu_items_win32(win.handle)[:20]]
+        except Exception:
+            tree_lines = []
+        if tree_lines:
+            lines.append("窗口菜单（click_ui_element 可直接点，无需先点开菜单）：")
+            lines.extend(tree_lines)
+        return "\n".join(lines) if lines else "未发现带名称的可操作控件"
     except Exception as e:
         return f"错误: 控件枚举失败 - {e}"
 
@@ -244,6 +335,46 @@ def click_ui_element(window_title: str, name: str) -> str:
         target_list = exact or partial
         target_list = [c for c in target_list if c.rectangle().width() > 0]
         if not target_list:
+            # 经典菜单项（如 记事本 格式→字体）：直接发菜单命令，无需点开菜单
+            try:
+                menu_items = _menu_items_win32(win.handle)
+            except Exception:
+                menu_items = []
+            for match_exact in (True, False):
+                for text, nid, path in menu_items:
+                    if match_exact:
+                        hit = text.strip() == name
+                    else:
+                        hit = name.lower() in text.lower()
+                    if not hit or nid in (0, -1, 0xFFFF, 0xFFFFFFFF):
+                        continue  # 分隔符/子菜单目录项没有命令 ID
+                    try:
+                        ctypes.windll.user32.PostMessageW(
+                            win.handle, 0x111, nid, 0)  # WM_COMMAND
+                    except Exception as e:
+                        return f"错误: 菜单命令「{path}」发送失败 - {e}"
+                    time.sleep(0.6)
+                    return f"已通过菜单命令点击「{path}」"
+            # 菜单树没有 → 找打开中的菜单弹窗（动态菜单/上下文菜单）
+            for p in _menu_popups():
+                try:
+                    items = p.descendants(control_type="MenuItem")
+                except Exception:
+                    continue
+                m_exact = [c for c in items if c.window_text().strip() == name]
+                m_part = [c for c in items
+                          if name.lower() in c.window_text().strip().lower()]
+                m_list = m_exact or m_part
+                m_list = [c for c in m_list if c.rectangle().width() > 0]
+                if m_list:
+                    tgt = m_list[0]
+                    clicked_name = tgt.window_text().strip() or name
+                    try:
+                        tgt.click_input()
+                    except Exception as e:
+                        return f"错误: 点击菜单项「{clicked_name}」时失败 - {e}"
+                    time.sleep(0.5)
+                    return f"已点击菜单项「{clicked_name}」"
             if not candidates:
                 return (f"错误: 窗口「{win.window_text()}」没有任何可枚举的标准控件"
                         f"（自绘界面）。不要再用 click_ui_element，改用 analyze_screen "
@@ -251,7 +382,8 @@ def click_ui_element(window_title: str, name: str) -> str:
             names = "、".join({c.window_text().strip() for c in candidates
                                if c.window_text().strip()})[:200]
             return (f"错误: 窗口「{win.window_text()}」中找不到名为「{name}」的控件。"
-                    f"现有控件: {names}")
+                    f"现有控件: {names}。"
+                    f"若该项在某个菜单里，请先点开所在菜单，再重新 list_ui_elements 查看")
         target = target_list[0]
         if exact:
             pass
