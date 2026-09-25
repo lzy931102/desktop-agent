@@ -13,7 +13,7 @@ import time
 import customtkinter as ctk
 import agent_vision
 from agent_loop import (DesktopAgent, LLMClient, LLMConfig, LLMProvider,
-                        build_llm_client)
+                        build_llm_client, final_reply_failed)
 from core.approval import GuiApprovalBridge
 from core.audit import AuditLogger
 from core.history import TaskHistory
@@ -262,9 +262,10 @@ class AgentGUI:
         self.input_text = ctk.CTkTextbox(
             row, height=76, font=ctk.CTkFont(size=13), corner_radius=10,
             fg_color=INPUT_BG, border_width=1, border_color=BORDER, wrap="word",
+            text_color=TEXT,  # 用户输入的文字 gray-100，输入框里最清晰
         )
         self.input_text.pack(side="left", fill="both", expand=True)
-        self.input_text.tag_config("ph", foreground="#D1D5DB")
+        self.input_text.tag_config("ph", foreground="#9CA3AF")  # 占位符 gray-400，弱于正式输入
         self.input_text.insert("1.0", PLACEHOLDER, "ph")
         self.input_text.bind("<FocusIn>", self._clear_placeholder)
         self.input_text.bind("<FocusOut>", self._restore_placeholder)
@@ -431,7 +432,10 @@ class AgentGUI:
 
             result = self.agent.run(task)
             stopped = "停止" in (result or "")
-            self.log_queue.put(("done", (not stopped and result is not None, result or "", stopped)))
+            # 防假成功：模型流程走完 ≠ 任务成功，最终回复里带失败信号按失败处理
+            ok = (result is not None and not stopped
+                  and not final_reply_failed(result))
+            self.log_queue.put(("done", (ok, result or "", stopped)))
         except Exception as e:
             self.log_queue.put(("done", (False, self._humanize_error(str(e)), False)))
 
