@@ -35,6 +35,7 @@ from core.approval import AutoDenyPolicy
 from core.audit import AuditLogger
 from core.history import TaskHistory
 from core.retry import run_with_retry
+from core.settings import PROVIDER_ENUM, resolve_api_key, validate_public_https
 
 
 class LLMProvider(Enum):
@@ -107,6 +108,41 @@ class LLMClient:
                 } for tc in (msg.tool_calls or [])
             ]
         }
+
+    def list_models(self) -> list:
+        """列出 Ollama 上可用的模型名（仅 OLLAMA provider）"""
+        if self.config.provider != LLMProvider.OLLAMA:
+            return []
+        base = self.config.base_url or "http://localhost:11434"
+        if not base.startswith(("http://", "https://")):
+            return []
+        try:
+            session = requests.Session()
+            session.trust_env = False
+            r = session.get(f"{base}/api/tags", timeout=5)
+            r.raise_for_status()
+            return [m.get("name", "") for m in r.json().get("models", []) if m.get("name")]
+        except Exception:
+            return []
+
+    def ping(self) -> tuple:
+        """云端连通性测试：发一次最小对话请求，返回 (ok, 描述)"""
+        if self.config.provider == LLMProvider.OLLAMA:
+            return self.check_connection()
+        if not self.config.api_key:
+            return False, "未配置 API Key"
+        ok, why = validate_public_https(self.config.base_url)
+        if not ok:
+            return False, why
+        try:
+            resp = self.client.chat.completions.create(
+                model=self.config.model,
+                messages=[{"role": "user", "content": "hi"}],
+                max_tokens=4,
+            )
+            return True, f"已连通（模型 {resp.model or self.config.model}）"
+        except Exception as e:
+            return False, str(e)[:150]
 
     def list_models(self) -> list:
         """列出 Ollama 上可用的模型名（仅 OLLAMA provider）"""
@@ -207,6 +243,77 @@ class LLMClient:
             "content": content,
             "tool_calls": tool_calls
         }
+
+
+class FallbackLLMClient:
+    """auto 模式：先走本地 Ollama，任何异常自动切换云端重试一次"""
+
+    def __init__(self, local: LLMClient, cloud: LLMClient,
+                 on_fallback=None):
+        self.local = local
+        self.cloud = cloud
+        self.on_fallback = on_fallback  # 回调：on_fallback(error) 切换时通知界面
+        self.config = local.config
+
+    def chat(self, messages: List[Dict], tools: List[Dict] = None) -> Dict:
+        try:
+            return self.local.chat(messages, tools)
+        except Exception as local_err:
+            if self.on_fallback:
+                try:
+                    self.on_fallback(str(local_err))
+                except Exception:
+                    pass
+            try:
+                return self.cloud.chat(messages, tools)
+            except Exception as cloud_err:
+                raise RuntimeError(
+                    f"本地与云端模型均调用失败。本地: {local_err}；云端: {cloud_err}"
+                ) from cloud_err
+
+    def check_connection(self) -> tuple:
+        ok_local, msg_local = self.local.check_connection()
+        ok_cloud, msg_cloud = self.cloud.ping()
+        if ok_local or ok_cloud:
+            parts = []
+            if ok_local:
+                parts.append(f"本地可用")
+            if ok_cloud:
+                parts.append(f"云端可用")
+            return True, "，".join(parts)
+        return False, f"本地: {msg_local}；云端: {msg_cloud}"
+
+
+def build_llm_client(settings, on_fallback=None):
+    """按 model_mode 构造 LLM 客户端：local / cloud / auto（本地失败切云端）"""
+    mode = settings.get("model_mode", "local")
+    local_cfg_dict = settings.get("local", {})
+    local_client = LLMClient(LLMConfig(
+        provider=LLMProvider.OLLAMA,
+        base_url=local_cfg_dict.get("base_url", "http://localhost:11434"),
+        model=local_cfg_dict.get("model", "qwen2.5-coder:7b"),
+        temperature=0.1,
+    ))
+    if mode == "local":
+        return local_client
+
+    cloud_cfg_dict = dict(settings.get("cloud", {}))
+    cloud_cfg_dict["api_key"] = resolve_api_key(cloud_cfg_dict)
+    provider_value = PROVIDER_ENUM.get(cloud_cfg_dict.get("provider", "zhipu"), "other")
+    if not cloud_cfg_dict["api_key"]:
+        if mode == "cloud":
+            raise RuntimeError("云端 API Key 未配置：请在设置中填写，或设置对应的环境变量")
+        return local_client  # auto 模式静默降级为纯本地
+    cloud_client = LLMClient(LLMConfig(
+        provider=LLMProvider(provider_value),
+        api_key=cloud_cfg_dict["api_key"],
+        base_url=cloud_cfg_dict.get("base_url", ""),
+        model=cloud_cfg_dict.get("model", ""),
+        temperature=0.1,
+    ))
+    if mode == "cloud":
+        return cloud_client
+    return FallbackLLMClient(local_client, cloud_client, on_fallback=on_fallback)
 
 
 def _extract_tool_call_from_text(text: str) -> Optional[Dict]:
