@@ -5,6 +5,7 @@
 """
 import hashlib
 import json
+import threading
 import time
 from pathlib import Path
 
@@ -19,22 +20,24 @@ class AuditLogger:
         self._prev_hash = ""
         self._day = None
         self._fh = None
+        self._lock = threading.Lock()  # 多任务并行时哈希链必须串行写入
 
     def emit(self, etype: str, **payload):
         """记录一条审计事件。etype 如 task_start / tool_call / approval_denied"""
-        entry = {"ts": time.strftime("%Y-%m-%dT%H:%M:%S"), "type": etype}
-        entry.update(payload)
-        entry["seq"] = self._seq
-        entry["prev"] = self._prev_hash
-        entry["hash"] = hashlib.sha256(
-            json.dumps(entry, sort_keys=True, ensure_ascii=False).encode("utf-8")
-        ).hexdigest()[:16]
-        try:
-            self._write(entry)
-        except OSError:
-            return  # 审计写失败不阻断任务执行
-        self._seq += 1
-        self._prev_hash = entry["hash"]
+        with self._lock:
+            entry = {"ts": time.strftime("%Y-%m-%dT%H:%M:%S"), "type": etype}
+            entry.update(payload)
+            entry["seq"] = self._seq
+            entry["prev"] = self._prev_hash
+            entry["hash"] = hashlib.sha256(
+                json.dumps(entry, sort_keys=True, ensure_ascii=False).encode("utf-8")
+            ).hexdigest()[:16]
+            try:
+                self._write(entry)
+            except OSError:
+                return  # 审计写失败不阻断任务执行
+            self._seq += 1
+            self._prev_hash = entry["hash"]
 
     def _write(self, entry: dict):
         day = time.strftime("%Y%m%d")
