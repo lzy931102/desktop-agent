@@ -102,6 +102,7 @@ class LLMClient:
             kwargs["tool_choice"] = "auto"
         resp = self.client.chat.completions.create(**kwargs)
         msg = resp.choices[0].message
+        usage = getattr(resp, "usage", None)
         return {
             "role": "assistant",
             "content": msg.content or "",
@@ -114,7 +115,10 @@ class LLMClient:
                         "arguments": tc.function.arguments
                     }
                 } for tc in (msg.tool_calls or [])
-            ]
+            ],
+            # token 用量透传（供界面统计；OpenAI 兼容通道）
+            "_usage": {"prompt": getattr(usage, "prompt_tokens", 0) or 0,
+                       "eval": getattr(usage, "completion_tokens", 0) or 0},
         }
 
     def list_models(self) -> list:
@@ -249,7 +253,10 @@ class LLMClient:
         return {
             "role": "assistant",
             "content": content,
-            "tool_calls": tool_calls
+            "tool_calls": tool_calls,
+            # token 用量透传（供界面统计；Ollama /api/chat 原生字段）
+            "_usage": {"prompt": data.get("prompt_eval_count") or 0,
+                       "eval": data.get("eval_count") or 0},
         }
 
 
@@ -726,7 +733,8 @@ TOOL_FUNCTIONS = {
 # 所以必须同时收录否定式变体，才能覆盖模型常见的"没有找到微信窗口"这类汇报；
 # "不确定"对应诚实汇报规则里"我不确定是否发送成功"的情形，同样不算成功。
 FAILURE_MARKERS = ("没找到", "没有找到", "找不到", "未找到",
-                   "无法", "失败", "错误", "未能", "不确定")
+                   "无法", "失败", "错误", "未能", "不确定",
+                   "没能", "没完成", "未完成", "没有完成", "不成功", "超时")
 
 
 def final_reply_failed(text) -> bool:
@@ -739,11 +747,12 @@ def final_reply_failed(text) -> bool:
 SYSTEM_PROMPT = """你是一个电脑操作助手，通过工具帮用户完成桌面任务。你能看屏幕、管窗口、点控件、用剪贴板。
 
 可用工具：
-- list_windows(): 列出所有可见窗口
+- list_windows(): 列出所有可见窗口（秒回）——「有哪些窗口/应用」一律用它，不要用 analyze_screen
 - focus_window(title): 把窗口切到前台
-- analyze_screen(question): 看一眼屏幕并回答问题（约30秒，较慢，必要时才用）
-- list_ui_elements(window_title): 列出窗口内的控件（按钮/菜单/输入框）及精确坐标
-- click_ui_element(window_title, name): 按名称点击控件——最可靠的点击方式
+- analyze_screen(question): 看懂屏幕内容并回答问题（约1分钟，很慢，超时会失败）——只用于理解屏幕内容
+- list_ui_elements(window_title): 列出窗口内的控件（按钮/菜单/输入框）及精确坐标；
+  点开菜单后再查一次，能列出菜单弹窗里的项（如 格式→字体）
+- click_ui_element(window_title, name): 按名称点击控件（含打开中的菜单项）——最可靠的点击方式
 - open_app(app_name): 打开应用（notepad/calc/cmd/explorer/paint/记事本/计算器等）
 - click(x, y): 点击屏幕坐标；type_text(text): 在光标处输入文本（支持中文，自动粘贴）
 - press_key(key) / hotkey(keys): 按键与组合键；scroll(clicks): 滚动；move_to(x, y): 移动鼠标
@@ -758,7 +767,8 @@ SYSTEM_PROMPT = """你是一个电脑操作助手，通过工具帮用户完成�
 1. 了解环境：先 list_windows 看有哪些窗口；需要目标应用时先 open_app 或 focus_window 把它切到前台
 2. 操作控件：list_ui_elements 查看目标窗口的控件名称 → click_ui_element 按名称点击。
    这比猜坐标可靠得多，是首选
-3. 看懂界面：需要了解屏幕内容/确认操作结果时用 analyze_screen（较慢，别每轮都用）
+3. 看懂界面：analyze_screen 很慢（约1分钟），只用在需要理解屏幕内容时；
+   「有哪些窗口/应用」用 list_windows，「有哪些控件」用 list_ui_elements（点开菜单后可查菜单项）
 4. 兜底手段：控件方式行不通时，才用 analyze_screen 了解大致位置，再 click(x, y) 坐标点击
 5. 输入文本：先点击输入框获得焦点，再 type_text
 
@@ -796,6 +806,7 @@ class DesktopAgent:
         self.on_log = None            # 回调：通用日志
         self.on_retry = None          # 回调：工具重试中（attempt, max_retries）
         self.current_turn = 0         # 当前轮次（供界面显示）
+        self.total_tokens = 0         # 本次任务累计 token（prompt+completion，供界面显示）
 
         self.auditor = auditor
         self.history = history
@@ -859,9 +870,11 @@ class DesktopAgent:
             if name == "clipboard_write" and not str(result).startswith("错误"):
                 return core_verify.verify_clipboard(args.get("text", ""))
             if name == "screenshot":
+                # screenshot 工具统一保存到 screenshots/ 目录，校验同一位置
                 path = str(args.get("path", "") or "")
-                if path and not path.startswith("screenshot_"):
-                    return core_verify.verify_file_exists(path)
+                if path:
+                    return core_verify.verify_file_exists(
+                        str(Path("screenshots") / path))
         except Exception as e:
             return True, f"校验异常(忽略): {e}"
         return None, ""
@@ -922,6 +935,8 @@ class DesktopAgent:
             # LLM 调用
             llm_start = time.time()
             resp = self.llm.chat(self.messages, TOOLS_SCHEMA)
+            _u = resp.get("_usage") or {}
+            self.total_tokens += (_u.get("prompt") or 0) + (_u.get("eval") or 0)
             self._log(f"思考用时 {time.time() - llm_start:.1f} 秒")
 
             self.messages.append(resp)
