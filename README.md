@@ -83,7 +83,7 @@ python test_browser_e2e.py
 
 ### 下载
 
-1. 打开 [Releases 页面](https://github.com/lzy931102/desktop-agent/releases)
+1. 打开 [Releases 页面](https://github.com/lzy931102/desktop-agent/releases/latest)
 2. 找到最新版本（如 v2.0.1）
 3. 在 "Assets" 区域，点击 `DesktopAgent.exe` 下载
 4. 下载完成后，双击运行

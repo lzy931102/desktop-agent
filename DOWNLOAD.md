@@ -4,7 +4,7 @@
 
 ### 1. 下载 DesktopAgent
 
-打开 [Releases 页面](https://github.com/lzy931102/desktop-agent/releases)，
+打开 [Releases 页面](https://github.com/lzy931102/desktop-agent/releases/latest)，
 在最新版本的 "Assets" 里点击 `DesktopAgent.exe` 下载。
 
 **注意**：点击后如果页面空白，是正常的——文件正在下载中，

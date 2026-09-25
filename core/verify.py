@@ -101,3 +101,30 @@ def verify_clipboard(expected: str) -> tuple:
                (False, "剪贴板内容与预期不符")
     except Exception as e:
         return True, f"校验跳过: {e}"
+
+
+# ====================== 消息发送验证（三态） ======================
+
+def check_message_sent(expected_text: str) -> tuple:
+    """验证"消息是否真的发出"。
+
+    借助本地视觉模型读当前聊天窗口，判断最新消息是否包含预期文本。
+    返回 (status, detail)：status ∈
+      "sent"     已确认消息出现在聊天窗口
+      "unclear"  无法确认（视觉不可用/看不清）——调用方不得声称任务完成
+      "failed"   确认聊天窗口中没有该消息
+    """
+    from agent_vision import get_vision  # 延迟导入避免循环依赖
+    vision = get_vision()
+    if not vision.is_available():
+        return "unclear", "视觉模型未就绪，无法确认消息是否发出"
+    q = ("请看屏幕上的聊天窗口。判断最新一条发出的消息是否包含这段文字："
+         f"「{expected_text}」。"
+         "只输出三个词之一：SENT（确认已发出且能看到）、"
+         "UNCLEAR（看不清或无法判断）、NOT_SENT（确认没有发出）。")
+    answer = vision.ask(q).strip().upper()
+    if "SENT" in answer and "NOT_SENT" not in answer:
+        return "sent", "已确认：消息出现在聊天窗口中"
+    if "NOT_SENT" in answer:
+        return "failed", "已确认：聊天窗口中没有看到该消息，消息可能未发出"
+    return "unclear", "视觉模型无法确认消息是否发出，请人工检查"

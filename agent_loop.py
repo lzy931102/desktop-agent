@@ -36,6 +36,7 @@ from core.audit import AuditLogger
 from core.history import TaskHistory
 from core.retry import run_with_retry
 from core.settings import PROVIDER_ENUM, resolve_api_key, validate_public_https
+from core.verify import check_message_sent
 
 
 class LLMProvider(Enum):
@@ -586,6 +587,20 @@ TOOLS_SCHEMA = [
     {
         "type": "function",
         "function": {
+            "name": "verify_message_sent",
+            "description": "发送消息类任务（微信/QQ/邮件等）发送后必须调用：用视觉确认消息是否真的出现在聊天窗口。返回 sent（已确认发出）/ unclear（无法确认）/ failed（确认未发出）",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "expected_text": {"type": "string", "description": "你刚发送的消息原文"}
+                },
+                "required": ["expected_text"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "get_mouse_position",
             "description": "获取当前鼠标坐标",
             "parameters": {"type": "object", "properties": {}}
@@ -681,6 +696,7 @@ TOOL_FUNCTIONS = {
     "click_ui_element": lambda args: _click_ui_element_impl(args.get("window_title", ""), args["name"]),
     "clipboard_read": lambda args: _clipboard_read_impl(),
     "clipboard_write": lambda args: _clipboard_write_impl(args["text"]),
+    "verify_message_sent": lambda args: check_message_sent(args["expected_text"]),
 }
 
 
@@ -696,6 +712,7 @@ SYSTEM_PROMPT = """你是一个电脑操作助手，通过工具帮用户完成�
 - click(x, y): 点击屏幕坐标；type_text(text): 在光标处输入文本（支持中文，自动粘贴）
 - press_key(key) / hotkey(keys): 按键与组合键；scroll(clicks): 滚动；move_to(x, y): 移动鼠标
 - clipboard_read() / clipboard_write(text): 读写剪贴板
+- verify_message_sent(expected_text): 发消息后验证消息是否真的出现在聊天窗口
 - locate_on_screen(image_path): 用模板图片找位置（需要预先准备好的png）
 - wait(seconds): 等待；screenshot(path): 截图保存
 
@@ -712,7 +729,14 @@ SYSTEM_PROMPT = """你是一个电脑操作助手，通过工具帮用户完成�
 2. 应用响应慢时用 wait 等待，不要连点
 3. 坐标基于主屏幕左上角(0,0)
 
-收到用户指令后，规划步骤并调用工具。每步完成后简要汇报。任务完成后，用一句明确的话告诉用户结果（如"计算器已打开，并按下了数字 9"）。"""
+【重要】消息发送类任务（微信/QQ/邮件等）的诚实汇报规则：
+1. 发送消息后，必须调用 verify_message_sent(你发送的原文) 验证消息是否真的发出
+2. 返回 sent → 才能说"任务完成"
+3. 返回 unclear → 必须明确告诉用户"我不确定消息是否发送成功，请人工检查"，禁止说"任务完成"
+4. 返回 failed → 必须明确告诉用户"消息没有发送成功"，禁止说"任务完成"
+5. 如果连验证手段都不可用（如聊天窗口不在前台），同样要说"我不确定"，不要声称完成
+
+收到用户指令后，规划步骤并调用工具。每步完成后简要汇报。任务完成后，用一句明确的话告诉用户结果；没把握的事不要说"完成"。"""
 
 
 class DesktopAgent:
