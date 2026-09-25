@@ -16,7 +16,6 @@ from dataclasses import dataclass, field
 from typing import List
 
 sys.path.insert(0, str(Path(__file__).parent))
-from desktop_agent import DesktopAgent
 
 try:
     import pyautogui
@@ -153,7 +152,6 @@ def save_ss(name, retry):
 
 class CalcTest:
     def __init__(self):
-        self.agent = DesktopAgent()
         self.report = TestReport()
         self.c = None
 

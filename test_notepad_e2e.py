@@ -14,7 +14,6 @@ from dataclasses import dataclass, field
 from typing import List, Optional
 
 sys.path.insert(0, str(Path(__file__).parent))
-from desktop_agent import DesktopAgent
 
 try:
     import pyautogui
@@ -102,7 +101,6 @@ def save_screenshot(step_name, retry):
 
 class NotepadE2ETest:
     def __init__(self):
-        self.agent = DesktopAgent()
         self.report = TestReport()
         self.notepad_hwnd = None
 
@@ -164,22 +162,22 @@ class NotepadE2ETest:
     def step2_type_content(self):
         self._ensure_notepad_focused()
         set_clipboard(TEST_TEXT)
-        self.agent.hotkey('ctrl', 'v')
+        pyautogui.hotkey('ctrl', 'v')
         time.sleep(0.3)
 
     def step3_save_with_path(self):
         self._ensure_notepad_focused()
         time.sleep(0.3)
-        self.agent.hotkey('ctrl', 's')
+        pyautogui.hotkey('ctrl', 's')
         time.sleep(2.0)
-        self.agent.hotkey('alt', 'n')
+        pyautogui.hotkey('alt', 'n')
         time.sleep(0.3)
-        self.agent.hotkey('ctrl', 'a')
+        pyautogui.hotkey('ctrl', 'a')
         time.sleep(0.1)
         set_clipboard(TEST_FILE)
-        self.agent.hotkey('ctrl', 'v')
+        pyautogui.hotkey('ctrl', 'v')
         time.sleep(0.5)
-        self.agent.press_key('enter')
+        pyautogui.press('enter')
         time.sleep(2.0)
 
     def verify3_file_exists(self):
@@ -187,7 +185,7 @@ class NotepadE2ETest:
 
     def step4_close_notepad(self):
         self._ensure_notepad_focused()
-        self.agent.hotkey('alt', 'f4')
+        pyautogui.hotkey('alt', 'f4')
         time.sleep(1.0)
         for _ in range(5):
             if self.notepad_hwnd and not user32.IsWindow(self.notepad_hwnd):
@@ -206,16 +204,16 @@ class NotepadE2ETest:
             focus_window(self.notepad_hwnd)
         else:
             raise Exception("Notepad not found on reopen")
-        self.agent.hotkey('ctrl', 'o')
+        pyautogui.hotkey('ctrl', 'o')
         time.sleep(1.5)
-        self.agent.hotkey('alt', 'n')
+        pyautogui.hotkey('alt', 'n')
         time.sleep(0.3)
-        self.agent.hotkey('ctrl', 'a')
+        pyautogui.hotkey('ctrl', 'a')
         time.sleep(0.1)
         set_clipboard(TEST_FILE)
-        self.agent.hotkey('ctrl', 'v')
+        pyautogui.hotkey('ctrl', 'v')
         time.sleep(0.5)
-        self.agent.press_key('enter')
+        pyautogui.press('enter')
         time.sleep(1.5)
 
     def verify5_content(self):
