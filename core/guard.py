@@ -50,6 +50,20 @@ RULES = [
 ]
 
 
+# 可安全重试的工具（幂等或只读操作）；不在清单内的失败交回模型决策
+RETRYABLE_TOOLS = {
+    "click", "type_text", "press_key", "hotkey", "move_to", "scroll",
+    "screenshot", "open_app", "wait", "list_windows", "focus_window",
+    "list_ui_elements", "click_ui_element", "clipboard_read",
+    "clipboard_write", "get_mouse_position", "get_screen_size",
+    "analyze_screen", "locate_on_screen",
+}
+
+
+def is_retryable(tool_name: str) -> bool:
+    return tool_name in RETRYABLE_TOOLS
+
+
 def evaluate(tool_name: str, args: dict) -> tuple:
     """返回 (risk, reason)。risk ∈ none/medium/high"""
     for rule in RULES:

@@ -30,9 +30,11 @@ from agent_vision import (
     clipboard_write as _clipboard_write_impl,
 )
 from core import guard
+from core import verify as core_verify
 from core.approval import AutoDenyPolicy
 from core.audit import AuditLogger
 from core.history import TaskHistory
+from core.retry import run_with_retry
 
 
 class LLMProvider(Enum):
@@ -105,6 +107,22 @@ class LLMClient:
                 } for tc in (msg.tool_calls or [])
             ]
         }
+
+    def list_models(self) -> list:
+        """列出 Ollama 上可用的模型名（仅 OLLAMA provider）"""
+        if self.config.provider != LLMProvider.OLLAMA:
+            return []
+        base = self.config.base_url or "http://localhost:11434"
+        if not base.startswith(("http://", "https://")):
+            return []
+        try:
+            session = requests.Session()
+            session.trust_env = False
+            r = session.get(f"{base}/api/tags", timeout=5)
+            r.raise_for_status()
+            return [m.get("name", "") for m in r.json().get("models", []) if m.get("name")]
+        except Exception:
+            return []
 
     def check_connection(self) -> tuple:
         """检查 LLM 服务是否可用，返回 (ok, 描述信息)。Ollama 查 /api/tags，
@@ -607,6 +625,7 @@ class DesktopAgent:
         self.on_tool_call = None      # 回调：工具调用前
         self.on_tool_result = None    # 回调：工具调用后
         self.on_log = None            # 回调：通用日志
+        self.on_retry = None          # 回调：工具重试中（attempt, max_retries）
         self.current_turn = 0         # 当前轮次（供界面显示）
 
         self.auditor = auditor
@@ -619,6 +638,64 @@ class DesktopAgent:
     def stop(self):
         """请求停止执行，在下一轮开始前生效"""
         self._stop_requested = True
+
+    def _execute_tool(self, name: str, args: dict, risk: str):
+        """执行单个工具：重试（指数退避）+ 动作后校验，全部事件入审计"""
+        if name not in TOOL_FUNCTIONS:
+            return f"错误: 未知工具 {name}"
+        retryable = risk != "high" and guard.is_retryable(name)
+
+        # click 前截图供"动作后校验"做界面变化对比
+        before_img = None
+        if name == "click":
+            try:
+                before_img = pyautogui.screenshot()
+            except Exception:
+                before_img = None
+
+        result, attempts, final_ok = run_with_retry(
+            lambda: TOOL_FUNCTIONS[name](args), name, retryable,
+            auditor=self.auditor,
+            on_retry=lambda attempt, mx, wait: self._on_retry(name, attempt, mx))
+
+        # 动作后校验（仅首次即成功的关键动作；重试路径已含在失败判定里）
+        if final_ok and attempts >= 1:
+            ok, detail = self._verify_action(name, args, result, before_img)
+            if ok is not None:
+                if self.auditor:
+                    self.auditor.emit("verify", tool=name, ok=ok, detail=detail)
+                if not ok:
+                    result = f"{result}（校验未通过: {detail}）"
+                    self._log(f"[校验] {name}: {detail}")
+
+        if attempts > 1:
+            self._log(f"[重试] {name} 共执行 {attempts} 次，"
+                      + ("最终成功" if final_ok else "仍然失败"))
+        return result
+
+    def _on_retry(self, tool: str, attempt: int, max_retries: int):
+        if self.on_retry:
+            try:
+                self.on_retry(tool, attempt, max_retries)
+            except Exception:
+                pass
+
+    def _verify_action(self, name: str, args: dict, result: str, before_img):
+        """按工具类型做动作后校验；返回 (ok|None, detail)，None 表示无校验手段"""
+        try:
+            if name == "open_app" and not str(result).startswith("错误"):
+                return core_verify.verify_open_app(args.get("app_name", ""))
+            if name == "click" and before_img is not None:
+                return core_verify.verify_click(before_img)
+            if name == "clipboard_write" and not str(result).startswith("错误"):
+                return core_verify.verify_clipboard(args.get("text", ""))
+            if name == "screenshot":
+                path = str(args.get("path", "") or "")
+                if path and not path.startswith("screenshot_"):
+                    return core_verify.verify_file_exists(path)
+        except Exception as e:
+            return True, f"校验异常(忽略): {e}"
+        return None, ""
 
     def _log(self, msg: str):
         if self.on_log:
@@ -736,18 +813,13 @@ class DesktopAgent:
                     self._log(f"[拦截] {result}")
                     self._last_locate_failed = False
                 else:
-                    try:
-                        exec_start = time.time()
-                        result = TOOL_FUNCTIONS[name](args)
-                        self._log(f"工具执行用时 {time.time() - exec_start:.1f} 秒")
-                        if name == "locate_on_screen":
-                            self._image_located = "found at" in str(result)
-                            self._last_locate_failed = not self._image_located
-                    except KeyError:
-                        result = f"错误: 未知工具 {name}"
-                        self._log(f"[错误] {result}")
-                    except Exception as e:
-                        result = f"错误: {e}"
+                    exec_start = time.time()
+                    result = self._execute_tool(name, args, risk)
+                    self._log(f"工具执行用时 {time.time() - exec_start:.1f} 秒")
+                    if name == "locate_on_screen":
+                        self._image_located = "found at" in str(result)
+                        self._last_locate_failed = not self._image_located
+                    if str(result).startswith("错误"):
                         self._log(f"[错误] {result}")
 
                 if self.on_tool_result:
