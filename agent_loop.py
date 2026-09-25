@@ -700,6 +700,20 @@ TOOL_FUNCTIONS = {
 }
 
 
+# 最终回复中的失败信号（防假成功）。注意"没找到"不是"没有找到"的子串，
+# 所以必须同时收录否定式变体，才能覆盖模型常见的"没有找到微信窗口"这类汇报；
+# "不确定"对应诚实汇报规则里"我不确定是否发送成功"的情形，同样不算成功。
+FAILURE_MARKERS = ("没找到", "没有找到", "找不到", "未找到",
+                   "无法", "失败", "错误", "未能", "不确定")
+
+
+def final_reply_failed(text) -> bool:
+    """检查 Agent 最后一条回复，判断任务是否实际失败（而非流程走完就算成功）"""
+    if not text:
+        return False
+    return any(marker in str(text) for marker in FAILURE_MARKERS)
+
+
 SYSTEM_PROMPT = """你是一个电脑操作助手，通过工具帮用户完成桌面任务。你能看屏幕、管窗口、点控件、用剪贴板。
 
 可用工具：
@@ -853,6 +867,7 @@ class DesktopAgent:
                 status = ("error" if error else
                           "stopped" if "停止" in (result or "") else
                           "max_turns" if "最大轮次" in (result or "") else
+                          "failed" if final_reply_failed(result) else
                           "success")
                 self.history.end(task_id, status, result or "",
                                  self.current_turn, time.time() - start)
