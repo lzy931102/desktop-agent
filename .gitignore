@@ -54,3 +54,7 @@ build/
 dist/
 *.spec
 DesktopAgent.exe
+
+# 云端凭据相关（防误提交）
+settings.json
+*.jsonl

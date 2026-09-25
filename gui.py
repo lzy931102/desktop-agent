@@ -6,17 +6,19 @@
   中部：执行记录（带时间戳、分类着色的对话式日志）
   底部：示例任务 → 任务输入框 + 开始/停止按钮 → 模型信息
 """
+import os
 import threading
 import queue
 import time
 import customtkinter as ctk
 import agent_vision
-from agent_loop import DesktopAgent, LLMClient, LLMConfig, LLMProvider
+from agent_loop import (DesktopAgent, LLMClient, LLMConfig, LLMProvider,
+                        build_llm_client)
 from core.approval import GuiApprovalBridge
 from core.audit import AuditLogger
 from core.history import TaskHistory
 from core.scheduler import Scheduler
-from core.settings import Settings
+from core.settings import CLOUD_PRESETS, Settings
 
 OLLAMA_URL = "http://localhost:11434"
 MODEL_NAME = "qwen2.5-coder:7b"
@@ -122,8 +124,10 @@ class AgentGUI:
         self._build_log()
         self._build_chips()
         self._build_input_row()
+        self._build_privacy_banner()
         self._build_footer()
         self._init_tray()
+        self._sync_privacy_banner()
 
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self.root.after(120, self._pump)
@@ -259,6 +263,25 @@ class AgentGUI:
         )
         self.start_button.pack(side="right", fill="y", padx=(10, 0))
 
+    def _build_privacy_banner(self):
+        """云端模式的隐私提示条（本地模式为空文本不占视觉）"""
+        self.privacy_banner = ctk.CTkLabel(
+            self.root, text="", font=ctk.CTkFont(size=11),
+            text_color=WARN, fg_color="#2B2317", corner_radius=8,
+        )
+        self.privacy_banner.pack(fill="x", padx=24, pady=(0, 6), ipady=3)
+
+    def _sync_privacy_banner(self):
+        mode = self.settings.get("model_mode", "local")
+        if mode == "cloud":
+            self.privacy_banner.configure(
+                text="⚠️ 云端模式：屏幕数据会上传到模型服务商")
+        elif mode == "auto":
+            self.privacy_banner.configure(
+                text="⚠️ 自动模式：本地失败时会改用云端，屏幕数据可能上传到模型服务商")
+        else:
+            self.privacy_banner.configure(text="")
+
     def _build_footer(self):
         ctk.CTkLabel(
             self.root,
@@ -320,6 +343,9 @@ class AgentGUI:
                                     hover_color="#964646")
         self.input_text.configure(state="disabled")
         self._update_tray("Desktop Agent · 执行中")
+        mode = self.settings.get("model_mode", "local")
+        if mode != "local":
+            self._log_line("warning", "⚠️ 云端模式：本次任务的屏幕数据会上传到模型服务商")
         self._log_line("time", time.strftime("%H:%M:%S") + "  📋 任务：" + task)
         threading.Thread(target=self._run_agent, args=(task,), daemon=True).start()
 
@@ -368,13 +394,11 @@ class AgentGUI:
     # ================= 后台 =================
     def _run_agent(self, task):
         try:
-            config = LLMConfig(
-                provider=LLMProvider.OLLAMA,
-                base_url=OLLAMA_URL,
-                model=self.settings.get("model", MODEL_NAME),
-                temperature=0.1
-            )
-            self.agent = DesktopAgent(LLMClient(config),
+            self.agent = build_llm_client(
+                self.settings,
+                on_fallback=lambda err: self.log_queue.put(
+                    ("log", f"⚠ 本地模型调用失败，自动切换云端: {err[:60]}")))
+            self.agent = DesktopAgent(self.agent,
                                       auditor=self.audit,
                                       history=self.history,
                                       approval=self.approval_bridge)
@@ -412,11 +436,14 @@ class AgentGUI:
                                        None, TEXT, CARD_RUN)))
 
     def _check_connection(self):
-        config = LLMConfig(provider=LLMProvider.OLLAMA, base_url=OLLAMA_URL, model=MODEL_NAME)
-        ok, info = LLMClient(config).check_connection()
+        try:
+            client = build_llm_client(self.settings)
+            ok, info = client.check_connection()
+        except RuntimeError as e:
+            ok, info = False, str(e)
         vision_ok = agent_vision.get_vision().is_available() if ok else False
         if ok:
-            extra = "，支持看屏分析" if vision_ok else "（未装视觉模型，看屏功能不可用）"
+            extra = "，支持看屏分析" if vision_ok else ""
             self.log_queue.put(("conn", (True, info + extra)))
         else:
             self.log_queue.put(("conn", (False, info)))
@@ -618,30 +645,38 @@ class AgentGUI:
     def _show_settings(self):
         dlg = ctk.CTkToplevel(self.root, fg_color=BG)
         dlg.title("设置")
-        dlg.geometry("520x420")
+        dlg.geometry("620x760")
         dlg.grab_set()
 
         body = ctk.CTkFrame(dlg, fg_color="transparent")
-        body.pack(fill="both", expand=True, padx=22, pady=18)
+        body.pack(fill="both", expand=True, padx=22, pady=14)
 
         ctk.CTkLabel(body, text="⚙ 设置", font=ctk.CTkFont(size=16, weight="bold"),
                      text_color=TEXT).pack(anchor="w")
 
-        ctk.CTkLabel(body, text="对话模型（本地 Ollama）",
-                     font=ctk.CTkFont(size=12), text_color=MUTED).pack(anchor="w", pady=(16, 4))
-        model_var = ctk.StringVar(value=self.settings.get("model", MODEL_NAME))
+        # ---- 模型模式 ----
+        ctk.CTkLabel(body, text="模型模式", font=ctk.CTkFont(size=12),
+                     text_color=MUTED).pack(anchor="w", pady=(12, 2))
+        mode_var = ctk.StringVar(value=self.settings.get("model_mode", "local"))
+        mode_row = ctk.CTkFrame(body, fg_color="transparent")
+        mode_row.pack(anchor="w")
+        for label, val in (("只用本地", "local"), ("只用云端", "cloud"), ("自动（本地优先）", "auto")):
+            ctk.CTkRadioButton(mode_row, text=label, variable=mode_var, value=val,
+                               command=lambda: sync_mode_ui(),
+                               text_color=TEXT, fg_color=ACCENT).pack(side="left", padx=(0, 14))
+
+        # ---- 本地配置 ----
+        ctk.CTkLabel(body, text="本地模型（Ollama，数据不出本机）",
+                     font=ctk.CTkFont(size=12), text_color=MUTED).pack(anchor="w", pady=(12, 2))
+        model_var = ctk.StringVar(value=self.settings.get("local", {}).get("model",
+                                  self.settings.get("model", MODEL_NAME)))
         model_menu = ctk.CTkOptionMenu(body, values=["加载中…"], variable=model_var,
-                                       width=300, fg_color=INPUT_BG,
+                                       width=320, fg_color=INPUT_BG,
                                        button_color=ACCENT, button_hover_color=ACCENT_HOVER)
         model_menu.pack(anchor="w")
-        hint = ctk.CTkLabel(body, text="正在读取模型列表…",
-                            font=ctk.CTkFont(size=11), text_color=MUTED)
-        hint.pack(anchor="w", pady=(4, 0))
-
-        tray_var = ctk.BooleanVar(value=self.settings.get("minimize_to_tray", True))
-        ctk.CTkSwitch(body, text="关闭窗口时最小化到系统托盘", variable=tray_var,
-                      progress_color=ACCENT, text_color=TEXT,
-                      font=ctk.CTkFont(size=12)).pack(anchor="w", pady=(20, 0))
+        local_hint = ctk.CTkLabel(body, text="正在读取模型列表…",
+                                  font=ctk.CTkFont(size=11), text_color=MUTED)
+        local_hint.pack(anchor="w", pady=(4, 0))
 
         def refresh_models():
             models = LLMClient(LLMConfig(provider=LLMProvider.OLLAMA,
@@ -650,21 +685,131 @@ class AgentGUI:
                 model_menu.configure(values=models)
                 if model_var.get() not in models:
                     model_var.set(models[0])
-                hint.configure(text=f"共 {len(models)} 个模型，选择后点保存立即生效")
+                local_hint.configure(text=f"共 {len(models)} 个本地模型可用")
             else:
-                hint.configure(text="读不到模型列表，请确认 Ollama 正在运行")
+                local_hint.configure(text="读不到模型列表，请确认 Ollama 正在运行")
+
+        # ---- 云端配置 ----
+        cloud_box = ctk.CTkFrame(body, fg_color=CARD, corner_radius=10,
+                                 border_width=1, border_color=BORDER)
+        cloud_box.pack(fill="x", pady=(14, 0))
+        ctk.CTkLabel(cloud_box, text="云端模型", font=ctk.CTkFont(size=12, weight="bold"),
+                     text_color=TEXT).pack(anchor="w", padx=14, pady=(10, 2))
+
+        cloud_cfg = dict(self.settings.get("cloud", {}))
+        preset_names = list(CLOUD_PRESETS.keys())
+        provider_by_name = {name: CLOUD_PRESETS[name]["provider"]
+                            for name in preset_names}
+        name_by_provider = {v: k for k, v in provider_by_name.items()}
+        provider_var = ctk.StringVar(value=name_by_provider.get(
+            cloud_cfg.get("provider", "zhipu"), "智谱"))
+        api_var = ctk.StringVar(value=cloud_cfg.get("api_key", ""))
+        cmodel_var = ctk.StringVar(value=cloud_cfg.get("model", "glm-4-flash"))
+        cbase_var = ctk.StringVar(value=cloud_cfg.get("base_url",
+                                  CLOUD_PRESETS["智谱"]["base_url"]))
+
+        prow = ctk.CTkFrame(cloud_box, fg_color="transparent")
+        prow.pack(fill="x", padx=14)
+        ctk.CTkLabel(prow, text="服务商", font=ctk.CTkFont(size=11),
+                     text_color=MUTED).pack(side="left")
+        provider_menu = ctk.CTkOptionMenu(prow, values=preset_names,
+                                          variable=provider_var, width=130,
+                                          fg_color=INPUT_BG, button_color=ACCENT)
+        provider_menu.pack(side="left", padx=(8, 0))
+
+        def on_provider_change(_=None):
+            preset = CLOUD_PRESETS.get(provider_var.get())
+            if preset:
+                cbase_var.set(preset["base_url"])
+                cmodel_var.set(preset["model"])
+        provider_menu.configure(command=on_provider_change)
+
+        ctk.CTkLabel(cloud_box, text="API Key（留空则使用环境变量）",
+                     font=ctk.CTkFont(size=11), text_color=MUTED).pack(
+            anchor="w", padx=14, pady=(8, 2))
+        api_entry = ctk.CTkEntry(cloud_box, textvariable=api_var, show="*",
+                                 width=340, fg_color=INPUT_BG, border_color=BORDER)
+        api_entry.pack(anchor="w", padx=14)
+
+        crow = ctk.CTkFrame(cloud_box, fg_color="transparent")
+        crow.pack(fill="x", padx=14, pady=(8, 4))
+        ctk.CTkLabel(crow, text="模型名", font=ctk.CTkFont(size=11),
+                     text_color=MUTED).pack(side="left")
+        ctk.CTkEntry(crow, textvariable=cmodel_var, width=170,
+                     fg_color=INPUT_BG, border_color=BORDER).pack(side="left", padx=(8, 12))
+        ctk.CTkLabel(crow, text="接口地址", font=ctk.CTkFont(size=11),
+                     text_color=MUTED).pack(side="left")
+        ctk.CTkEntry(crow, textvariable=cbase_var, width=250,
+                     fg_color=INPUT_BG, border_color=BORDER).pack(side="left", padx=(8, 0))
+
+        test_row = ctk.CTkFrame(cloud_box, fg_color="transparent")
+        test_row.pack(fill="x", padx=14, pady=(6, 12))
+        test_result = ctk.CTkLabel(test_row, text="", font=ctk.CTkFont(size=11),
+                                   text_color=MUTED, anchor="w")
+        env_hint = ""
+        preset = CLOUD_PRESETS.get(provider_var.get(), {})
+        if preset and os.environ.get(preset["env"]):
+            env_hint = "（检测到环境变量，优先使用）"
+
+        def run_test():
+            test_result.configure(text="测试中…", text_color=MUTED)
+            def work():
+                cfg = LLMConfig(
+                    provider=LLMProvider(PROVIDER_ENUM.get(
+                        provider_by_name.get(provider_var.get(), "zhipu"), "other")),
+                    api_key=api_var.get().strip() or resolve_api_key({
+                        "provider": provider_by_name.get(provider_var.get(), "zhipu")}),
+                    base_url=cbase_var.get().strip(),
+                    model=cmodel_var.get().strip(),
+                )
+                ok, msg = LLMClient(cfg).ping()
+                test_result.configure(text=("✓ " if ok else "✗ ") + msg,
+                                      text_color=OK if ok else ERR)
+            threading.Thread(target=work, daemon=True).start()
+
+        ctk.CTkButton(test_row, text="测试连接", width=100, height=26,
+                      corner_radius=6, fg_color="#2A2A2A", hover_color="#333333",
+                      text_color=TEXT, command=run_test).pack(side="left")
+        test_result.pack(side="left", padx=10)
+        if env_hint:
+            test_result.configure(text="✓ " + env_hint.strip("（）"), text_color=OK)
+
+        # ---- 隐私提示 ----
+        privacy = ctk.CTkLabel(body, text="",
+                               font=ctk.CTkFont(size=11), text_color=WARN,
+                               wraplength=560, justify="left", anchor="w")
+
+        def sync_mode_ui():
+            privacy.configure(text="" if mode_var.get() == "local" else
+                              "⚠️ 云端模式：屏幕数据会上传到模型服务商")
+        privacy.pack(anchor="w", pady=(10, 0))
+        sync_mode_ui()
+
+        # ---- 其他 ----
+        tray_var = ctk.BooleanVar(value=self.settings.get("minimize_to_tray", True))
+        ctk.CTkSwitch(body, text="关闭窗口时最小化到系统托盘", variable=tray_var,
+                      progress_color=ACCENT, text_color=TEXT,
+                      font=ctk.CTkFont(size=12)).pack(anchor="w", pady=(14, 0))
 
         def save():
-            self.settings.set("model", model_var.get())
+            self.settings.set("model_mode", mode_var.get())
+            self.settings.set("local", {**self.settings.get("local", {}),
+                                        "model": model_var.get(),
+                                        "base_url": OLLAMA_URL,
+                                        "provider": "ollama"})
+            self.settings.set("cloud", {
+                "provider": provider_by_name.get(provider_var.get(), "zhipu"),
+                "api_key": api_var.get().strip(),
+                "base_url": cbase_var.get().strip(),
+                "model": cmodel_var.get().strip(),
+            })
             self.settings.set("minimize_to_tray", bool(tray_var.get()))
-            self._log_line("info", f"⚙ 设置已保存：模型 {model_var.get()}（立即生效）")
+            self._log_line("info", f"⚙ 设置已保存：模式 {mode_var.get()}")
             self._check_connection_async()
+            self._sync_privacy_banner()
             dlg.destroy()
 
-        ctk.CTkButton(body, text="重新读取模型列表", width=150, height=28,
-                      fg_color="#2A2A2A", hover_color="#333333", text_color=TEXT,
-                      command=refresh_models).pack(anchor="w", pady=(10, 0))
-        ctk.CTkButton(body, text="保存", width=150, height=36, corner_radius=8,
+        ctk.CTkButton(body, text="保存", width=170, height=38, corner_radius=8,
                       font=ctk.CTkFont(size=13, weight="bold"),
                       fg_color=ACCENT, hover_color=ACCENT_HOVER,
                       command=save).pack(anchor="w", pady=(16, 0))
