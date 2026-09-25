@@ -4,7 +4,7 @@
 
 ![Python](https://img.shields.io/badge/Python-3.8+-blue)
 ![License](https://img.shields.io/badge/License-MIT-green)
-![Tests](https://img.shields.io/badge/Tests-17%20passed-brightgreen)
+![Tests](https://img.shields.io/badge/Tests-27%20passed-brightgreen)
 ![Platform](https://img.shields.io/badge/Platform-Windows-lightgrey)
 
 一个模块化的 Windows 桌面操作 Agent，支持截屏感知、OCR 识别、图像检测、鼠标点击、键盘输入等自动化操作。
