@@ -96,6 +96,32 @@ check("url: https 公网通过", validate_public_https("https://open.bigmodel.cn
 check("url: 内网拒绝", not validate_public_https("https://192.168.1.10/v1")[0])
 check("url: 环回拒绝", not validate_public_https("https://127.0.0.1/v1")[0])
 
+# ================= feishu（webhook 通知通道） =================
+from unittest import mock
+from core.feishu import validate_webhook, send_feishu_message
+import agent_loop as _al
+check("feishu: 未配置给提示", "未配置" in validate_webhook(""))
+check("feishu: http 拒绝", "https" in validate_webhook("http://open.feishu.cn/hook/x"))
+check("feishu: 非官方域名拒绝", "官方域名" in validate_webhook("https://example.com/hook"))
+check("feishu: 假冒子域拒绝",
+      "官方域名" in validate_webhook("https://open.feishu.cn.evil.com/hook"))
+check("feishu: 官方域名通过",
+      validate_webhook("https://open.feishu.cn/open-apis/bot/v2/hook/xxxx") is None)
+
+class _FeishuResp:
+    status_code = 200
+    def json(self):
+        return {"code": 0, "msg": "success"}
+with mock.patch.object(_al.requests, "post", return_value=_FeishuResp()) as mp:
+    ok, detail = send_feishu_message(
+        "你好", "https://open.feishu.cn/open-apis/bot/v2/hook/xxxx")
+check("feishu: 发送成功解析", ok and detail == "已发送到飞书群")
+check("feishu: 请求体格式", mp.call_args.kwargs["json"] ==
+      {"msg_type": "text", "content": {"text": "你好"}})
+check("feishu: agent 工具已注册",
+      any(f["function"]["name"] == "send_feishu_message" for f in _al.TOOLS_SCHEMA)
+      and "send_feishu_message" in _al.TOOL_FUNCTIONS)
+
 from agent_loop import (build_llm_client, LLMClient, LLMConfig, LLMProvider,
                         FallbackLLMClient)
 c = build_llm_client(st)
