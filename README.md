@@ -196,17 +196,14 @@ python -m PyInstaller DesktopAgent.spec --noconfirm
 
 ```
 desktop-agent/
-├── agent/                    # 核心模块
-│   ├── modules/             # 功能模块
-│   │   ├── perception/      # 感知层
-│   │   ├── cognition/       # 认知层
-│   │   └── ...
-│   ├── main.py              # 入口
-│   └── scheduler.py         # 调度器
-├── test_*.py                # 测试文件
-├── requirements.txt         # 依赖
-├── LICENSE                  # MIT License
-└── README.md                # 项目说明
+├── gui.py                    # 图形界面（多任务并行：侧栏+Tab+对话流+任务表）
+├── agent_loop.py             # agent 主干（LLM 循环、工具调度）
+├── agent_vision.py           # 工具包：视觉/窗口/UIA/剪贴板
+├── core/                     # 基础设施：audit/guard/approval/history/scheduler/settings
+├── test_*.py                 # 测试文件
+├── requirements.txt          # 依赖
+├── LICENSE                   # MIT License
+└── README.md                 # 项目说明
 ```
 
 ## 参考项目
