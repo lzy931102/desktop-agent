@@ -15,6 +15,8 @@ from agent_loop import DesktopAgent, LLMClient, LLMConfig, LLMProvider
 from core.approval import GuiApprovalBridge
 from core.audit import AuditLogger
 from core.history import TaskHistory
+from core.scheduler import Scheduler
+from core.settings import Settings
 
 OLLAMA_URL = "http://localhost:11434"
 MODEL_NAME = "qwen2.5-coder:7b"
@@ -107,7 +109,11 @@ class AgentGUI:
         self.audit = AuditLogger()
         self.history = TaskHistory()
         self.approval_bridge = GuiApprovalBridge()
+        self.settings = Settings()
+        self.scheduler = Scheduler(on_due=self._on_scheduled_task)
+        self.scheduler.start()
         self._confirm_open = False
+        self.tray = None
 
         self.log_queue = queue.Queue()
 
@@ -117,6 +123,7 @@ class AgentGUI:
         self._build_chips()
         self._build_input_row()
         self._build_footer()
+        self._init_tray()
 
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self.root.after(120, self._pump)
@@ -135,12 +142,15 @@ class AgentGUI:
             font=ctk.CTkFont(size=12), text_color=MUTED,
         )
         self.conn_label.pack(side="right")
-        ctk.CTkButton(
-            bar, text="📜 历史", width=64, height=24, corner_radius=6,
-            fg_color="transparent", border_width=1, border_color=BORDER,
-            text_color=MUTED, hover_color="#2A2A2A",
-            font=ctk.CTkFont(size=12), command=self._show_history,
-        ).pack(side="right", padx=(0, 12))
+        for text, cmd in (("📜 历史", self._show_history),
+                          ("⏰ 定时", self._show_scheduler),
+                          ("⚙ 设置", self._show_settings)):
+            ctk.CTkButton(
+                bar, text=text, width=64, height=24, corner_radius=6,
+                fg_color="transparent", border_width=1, border_color=BORDER,
+                text_color=MUTED, hover_color="#2A2A2A",
+                font=ctk.CTkFont(size=12), command=cmd,
+            ).pack(side="right", padx=(0, 8))
 
     def _build_status_card(self):
         card = ctk.CTkFrame(self.root, fg_color=CARD, corner_radius=12,
@@ -309,6 +319,7 @@ class AgentGUI:
         self.start_button.configure(text="⏹ 停止", fg_color="#7A3B3B",
                                     hover_color="#964646")
         self.input_text.configure(state="disabled")
+        self._update_tray("Desktop Agent · 执行中")
         self._log_line("time", time.strftime("%H:%M:%S") + "  📋 任务：" + task)
         threading.Thread(target=self._run_agent, args=(task,), daemon=True).start()
 
@@ -319,6 +330,9 @@ class AgentGUI:
                                     hover_color=ACCENT_HOVER)
         self.input_text.configure(state="normal")
         elapsed = ""
+        if self.run_start_time:
+            elapsed = f"，用时 {time.time() - self.run_start_time:.0f} 秒"
+        self._update_tray("Desktop Agent · 就绪")
         if self.run_start_time:
             elapsed = f"，用时 {time.time() - self.run_start_time:.0f} 秒"
         if stopped:
@@ -357,7 +371,7 @@ class AgentGUI:
             config = LLMConfig(
                 provider=LLMProvider.OLLAMA,
                 base_url=OLLAMA_URL,
-                model=MODEL_NAME,
+                model=self.settings.get("model", MODEL_NAME),
                 temperature=0.1
             )
             self.agent = DesktopAgent(LLMClient(config),
@@ -367,12 +381,27 @@ class AgentGUI:
             self.agent.on_log = lambda m: self.log_queue.put(("log", m))
             self.agent.on_tool_call = self._on_tool_call
             self.agent.on_tool_result = self._on_tool_result
+            self.agent.on_retry = self._on_retry
 
             result = self.agent.run(task)
             stopped = "停止" in (result or "")
             self.log_queue.put(("done", (not stopped and result is not None, result or "", stopped)))
         except Exception as e:
             self.log_queue.put(("done", (False, self._humanize_error(str(e)), False)))
+
+    def _on_retry(self, tool, attempt, max_retries):
+        self.log_queue.put(("status", ("🔄", f"重试中 {attempt}/{max_retries}：{TOOL_NAMES.get(tool, tool)}",
+                                       "上一次执行未成功，正在自动重试", WARN, CARD_RUN)))
+
+    def _on_scheduled_task(self, sched_task: dict):
+        """定时任务到点触发（scheduler 后台线程回调）"""
+        task = sched_task.get("task", "")
+        if self.is_running:
+            self.log_queue.put(("log", f"⏰ 定时任务到点但助手正忙，已跳过：{task}"))
+            self.scheduler.set_last_status(sched_task["id"], "skipped-忙")
+            return
+        self.log_queue.put(("log", f"⏰ 定时任务触发：{task}"))
+        self.log_queue.put(("sched_run", task))
 
     def _on_tool_call(self, name, args):
         self.log_queue.put(("status", ("⚙", f"正在执行：{tool_display(name, args)}",
@@ -410,6 +439,18 @@ class AgentGUI:
                                                   text_color=ERR)
                 elif kind == "status":
                     self._set_status(*payload)
+                elif kind == "sched_run":
+                    self.is_running = True
+                    self.run_start_time = time.time()
+                    self.current_turn = 0
+                    self._set_status("🧠", "开始执行定时任务…", payload,
+                                     color=TEXT, card=CARD_RUN)
+                    self.start_button.configure(text="⏹ 停止", fg_color="#7A3B3B",
+                                                hover_color="#964646")
+                    self.input_text.configure(state="disabled")
+                    self._update_tray("Desktop Agent · 执行中")
+                    threading.Thread(target=self._run_agent, args=(payload,),
+                                     daemon=True).start()
                 elif kind == "done":
                     self._finish(*payload)
         except queue.Empty:
@@ -528,15 +569,245 @@ class AgentGUI:
         box.insert("1.0", text or "还没有任务记录")
         box.configure(state="disabled")
 
+    # ================= 系统托盘 =================
+    def _init_tray(self):
+        try:
+            import pystray
+            from PIL import Image, ImageDraw
+
+            img = Image.new("RGB", (64, 64), ACCENT)
+            d = ImageDraw.Draw(img)
+            d.rounded_rectangle((10, 14, 54, 50), radius=8, fill="#0F2A4A")
+            d.ellipse((22, 24, 30, 32), fill="#7FD1FF")   # 左眼
+            d.ellipse((34, 24, 42, 32), fill="#7FD1FF")   # 右眼
+            d.rounded_rectangle((22, 38, 42, 44), radius=3, fill="#7FD1FF")  # 嘴
+            menu = pystray.Menu(
+                pystray.MenuItem("显示主窗口", self._tray_show, default=True),
+                pystray.MenuItem("退出", self._tray_exit),
+            )
+            self.tray = pystray.Icon("DesktopAgent", img,
+                                     "Desktop Agent · 就绪", menu)
+            self.tray.run_detached()
+        except Exception:
+            self.tray = None  # 托盘不可用不影响主功能
+
+    def _update_tray(self, text: str):
+        if self.tray:
+            try:
+                self.tray.tooltip = text
+            except Exception:
+                pass
+
+    def _tray_show(self, icon=None, item=None):
+        self.root.after(0, lambda: (self.root.deiconify(), self.root.lift()))
+
+    def _tray_exit(self, icon=None, item=None):
+        self.root.after(0, self._real_exit)
+
+    def _real_exit(self):
+        self.scheduler.stop()
+        self.audit.close()
+        if self.tray:
+            try:
+                self.tray.stop()
+            except Exception:
+                pass
+        self.root.destroy()
+
+    # ================= 设置页（模型切换等） =================
+    def _show_settings(self):
+        dlg = ctk.CTkToplevel(self.root, fg_color=BG)
+        dlg.title("设置")
+        dlg.geometry("520x420")
+        dlg.grab_set()
+
+        body = ctk.CTkFrame(dlg, fg_color="transparent")
+        body.pack(fill="both", expand=True, padx=22, pady=18)
+
+        ctk.CTkLabel(body, text="⚙ 设置", font=ctk.CTkFont(size=16, weight="bold"),
+                     text_color=TEXT).pack(anchor="w")
+
+        ctk.CTkLabel(body, text="对话模型（本地 Ollama）",
+                     font=ctk.CTkFont(size=12), text_color=MUTED).pack(anchor="w", pady=(16, 4))
+        model_var = ctk.StringVar(value=self.settings.get("model", MODEL_NAME))
+        model_menu = ctk.CTkOptionMenu(body, values=["加载中…"], variable=model_var,
+                                       width=300, fg_color=INPUT_BG,
+                                       button_color=ACCENT, button_hover_color=ACCENT_HOVER)
+        model_menu.pack(anchor="w")
+        hint = ctk.CTkLabel(body, text="正在读取模型列表…",
+                            font=ctk.CTkFont(size=11), text_color=MUTED)
+        hint.pack(anchor="w", pady=(4, 0))
+
+        tray_var = ctk.BooleanVar(value=self.settings.get("minimize_to_tray", True))
+        ctk.CTkSwitch(body, text="关闭窗口时最小化到系统托盘", variable=tray_var,
+                      progress_color=ACCENT, text_color=TEXT,
+                      font=ctk.CTkFont(size=12)).pack(anchor="w", pady=(20, 0))
+
+        def refresh_models():
+            models = LLMClient(LLMConfig(provider=LLMProvider.OLLAMA,
+                                         base_url=OLLAMA_URL)).list_models()
+            if models:
+                model_menu.configure(values=models)
+                if model_var.get() not in models:
+                    model_var.set(models[0])
+                hint.configure(text=f"共 {len(models)} 个模型，选择后点保存立即生效")
+            else:
+                hint.configure(text="读不到模型列表，请确认 Ollama 正在运行")
+
+        def save():
+            self.settings.set("model", model_var.get())
+            self.settings.set("minimize_to_tray", bool(tray_var.get()))
+            self._log_line("info", f"⚙ 设置已保存：模型 {model_var.get()}（立即生效）")
+            self._check_connection_async()
+            dlg.destroy()
+
+        ctk.CTkButton(body, text="重新读取模型列表", width=150, height=28,
+                      fg_color="#2A2A2A", hover_color="#333333", text_color=TEXT,
+                      command=refresh_models).pack(anchor="w", pady=(10, 0))
+        ctk.CTkButton(body, text="保存", width=150, height=36, corner_radius=8,
+                      font=ctk.CTkFont(size=13, weight="bold"),
+                      fg_color=ACCENT, hover_color=ACCENT_HOVER,
+                      command=save).pack(anchor="w", pady=(16, 0))
+
+        body.after(200, refresh_models)
+
+    def _check_connection_async(self):
+        threading.Thread(target=self._check_connection, daemon=True).start()
+
+    # ================= 定时任务面板 =================
+    def _show_scheduler(self):
+        dlg = ctk.CTkToplevel(self.root, fg_color=BG)
+        dlg.title("定时任务")
+        dlg.geometry("720x560")
+        dlg.grab_set()
+
+        body = ctk.CTkFrame(dlg, fg_color="transparent")
+        body.pack(fill="both", expand=True, padx=18, pady=(16, 10))
+
+        ctk.CTkLabel(body, text="⏰ 定时任务", font=ctk.CTkFont(size=16, weight="bold"),
+                     text_color=TEXT).pack(anchor="w")
+
+        # ---- 新建表单 ----
+        form = ctk.CTkFrame(body, fg_color=CARD, corner_radius=10)
+        form.pack(fill="x", pady=(10, 8))
+        task_var = ctk.StringVar()
+        type_var = ctk.StringVar(value="每天")
+        time_var = ctk.StringVar(value="08:30")
+        weekday_var = ctk.StringVar(value="星期一")
+        interval_var = ctk.StringVar(value="30")
+
+        ctk.CTkEntry(form, textvariable=task_var, placeholder_text="到点执行的任务，如：打开计算器",
+                     width=330, fg_color=INPUT_BG, border_color=BORDER).grid(
+            row=0, column=0, columnspan=3, sticky="w", padx=12, pady=(12, 6))
+        type_menu = ctk.CTkOptionMenu(form, values=["每天", "每周", "间隔分钟"],
+                                      variable=type_var, width=110,
+                                      fg_color=INPUT_BG, button_color=ACCENT)
+        time_entry = ctk.CTkEntry(form, textvariable=time_var, width=90,
+                                  fg_color=INPUT_BG, border_color=BORDER,
+                                  placeholder_text="08:30")
+        weekday_menu = ctk.CTkOptionMenu(form, values=["星期一", "星期二", "星期三", "星期四",
+                                                       "星期五", "星期六", "星期日"],
+                                         variable=weekday_var, width=110,
+                                         fg_color=INPUT_BG, button_color=ACCENT)
+        interval_entry = ctk.CTkEntry(form, textvariable=interval_var, width=90,
+                                      fg_color=INPUT_BG, border_color=BORDER)
+        type_menu.grid(row=1, column=0, sticky="w", padx=12, pady=4)
+        time_entry.grid(row=1, column=1, sticky="w", padx=8, pady=4)
+        weekday_menu.grid(row=1, column=1, sticky="w", padx=8, pady=4)
+        interval_entry.grid(row=1, column=1, sticky="w", padx=8, pady=4)
+        ctk.CTkButton(form, text="＋ 添加", width=80, height=28, corner_radius=6,
+                      fg_color=ACCENT, hover_color=ACCENT_HOVER,
+                      command=lambda: self._add_scheduled(
+                          dlg, task_var, type_var, time_var, weekday_var, interval_var,
+                          time_entry, weekday_menu, interval_entry)
+                      ).grid(row=1, column=2, sticky="e", padx=12, pady=4)
+
+        def on_type_change(_=None):
+            if type_var.get() == "每天":
+                time_entry.grid(); weekday_menu.grid_remove(); interval_entry.grid_remove()
+            elif type_var.get() == "每周":
+                time_entry.grid(); weekday_menu.grid(); interval_entry.grid_remove()
+            else:
+                time_entry.grid_remove(); weekday_menu.grid_remove(); interval_entry.grid()
+        type_menu.configure(command=on_type_change)
+        on_type_change()
+
+        # ---- 任务列表 ----
+        ctk.CTkLabel(body, text="现有任务", font=ctk.CTkFont(size=12),
+                     text_color=MUTED).pack(anchor="w", pady=(6, 2))
+        self.sched_list_frame = ctk.CTkFrame(body, fg_color="#191919", corner_radius=10)
+        self.sched_list_frame.pack(fill="both", expand=True)
+        self._render_sched_list(self.sched_list_frame)
+        body.pack_configure(expand=True)
+
+    def _add_scheduled(self, dlg, task_var, type_var, time_var, weekday_var,
+                       interval_var, time_entry, weekday_menu, interval_entry):
+        task = task_var.get().strip()
+        if not task:
+            return
+        stype = {"每天": "daily", "每周": "weekly", "间隔分钟": "interval"}[type_var.get()]
+        rec = self.scheduler.add(
+            task, stype,
+            time_str=time_var.get().strip() if time_entry.winfo_ismapped() else "",
+            weekday={"星期一": "monday", "星期二": "tuesday", "星期三": "wednesday",
+                     "星期四": "thursday", "星期五": "friday", "星期六": "saturday",
+                     "星期日": "sunday"}.get(weekday_var.get(), "") if weekday_menu.winfo_ismapped() else "",
+            interval_minutes=int(interval_var.get() or 0) if interval_entry.winfo_ismapped() else 0,
+        )
+        self._log_line("info", f"⏰ 已添加定时任务（{Scheduler.describe(rec)}）：{task}")
+        for w in self.sched_list_frame.winfo_children():
+            w.destroy()
+        self._render_sched_list(self.sched_list_frame)
+
+    def _render_sched_list(self, parent):
+        tasks = self.scheduler.load()
+        if not tasks:
+            ctk.CTkLabel(parent, text="还没有定时任务，用上方表单添加",
+                         font=ctk.CTkFont(size=12), text_color=MUTED).pack(pady=16)
+            return
+        for t in tasks:
+            row = ctk.CTkFrame(parent, fg_color="#222222", corner_radius=8)
+            row.pack(fill="x", padx=10, pady=4)
+            mark = "🟢" if t.get("enabled") else "⚪"
+            last = time.strftime("%m-%d %H:%M", time.localtime(t["last_run"])) \
+                if t.get("last_run") else "未执行过"
+            info = (f"{mark} {Scheduler.describe(t)} ｜ {t['task'][:26]}\n"
+                    f"    上次：{last} {t.get('last_status', '')}")
+            ctk.CTkLabel(row, text=info, font=ctk.CTkFont(size=11),
+                         text_color=TEXT if t.get("enabled") else MUTED,
+                         justify="left", anchor="w").pack(side="left", padx=10, pady=6)
+            btns = ctk.CTkFrame(row, fg_color="transparent")
+            btns.pack(side="right", padx=8)
+            ctk.CTkButton(btns, text="禁用" if t.get("enabled") else "启用", width=48,
+                          height=22, corner_radius=6, fg_color="#2A2A2A",
+                          hover_color="#333333", text_color=TEXT,
+                          command=lambda tid=t["id"], en=not t.get("enabled"), d=parent:
+                          (self.scheduler.set_enabled(tid, en),
+                           [c.destroy() for c in d.winfo_children()],
+                           self._render_sched_list(d))).pack(side="left", padx=2)
+            ctk.CTkButton(btns, text="删除", width=48, height=22, corner_radius=6,
+                          fg_color="#7A3B3B", hover_color="#964646", text_color=TEXT,
+                          command=lambda tid=t["id"], d=parent:
+                          (self.scheduler.remove(tid),
+                           [c.destroy() for c in d.winfo_children()],
+                           self._render_sched_list(d))).pack(side="left", padx=2)
+
     def _on_close(self):
         if self.is_running:
             self._set_status("⚠", "任务进行中，请先停止再关闭",
                              "点击「⏹ 停止」结束当前任务", color=WARN, card=CARD)
             return
-        self.audit.close()
-        self.root.destroy()
+        if self.tray and self.settings.get("minimize_to_tray", True):
+            self.root.withdraw()  # 收进托盘，程序继续驻留
+            self._update_tray("Desktop Agent · 就绪（已最小化到托盘）")
+            return
+        self._real_exit()
 
 
 if __name__ == "__main__":
+    import sys
     app = AgentGUI()
+    if len(sys.argv) >= 3 and sys.argv[1] == "--debug-open":
+        panel = sys.argv[2]  # settings / scheduler / history
+        app.root.after(1500, getattr(app, f"_show_{panel}"))
     app.root.mainloop()
