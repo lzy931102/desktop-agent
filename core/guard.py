@@ -2,9 +2,19 @@
 
 evaluate() 对每次工具调用做风险评估，返回 (risk, reason)：
 - "none"   正常操作
-- "medium" 敏感操作：记录审计，不打断
+- "medium" 敏感操作：记录审计 + 界面提示，不打断
 - "high"   危险操作：必须经过 approval 确认才执行
+
+匹配按防对抗标准设计（issue #2），参数值与关键词在比对前做同构归一化：
+- 统一小写；
+- 分隔符归一化：制表符/换行/冒号 → 空格，连续空白折叠为单空格；
+- 中文间隙剔除：夹在两个中文字符之间的空白删除（"删 除" → "删除"），
+  英文词间空格保留（"format C" 不受影响）；
+- 组合键按 token 集合比对：键序无关（["f4","alt"] 命中 "alt+f4"）。
+不入参假设：非 str 工具名或非 dict args 一律视为无法评估，按 high 拒绝
+（fail-closed），不抛异常。
 """
+import re
 
 # 规则字段：
 #   tools        适用工具名列表
@@ -65,21 +75,65 @@ def is_retryable(tool_name: str) -> bool:
     return tool_name in RETRYABLE_TOOLS
 
 
+# 分隔符归一化：这些字符在匹配语境里等价于空格（制表符/换行/半角冒号）。
+# 注意不收分号/逗号/全角冒号——它们是待拍板的扩展项（见测试 xfail 清单）。
+_SEP_TO_SPACE = str.maketrans({"\t": " ", "\n": " ", "\r": " ", ":": " "})
+
+# 夹在两个 CJK 字符之间的空白（CJK 统一表意文字 + 扩展A + 兼容表意文字）。
+_CJK_CHARS = "\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff"
+_CJK_GAP = re.compile(f"([{_CJK_CHARS}]) (?=[{_CJK_CHARS}])")
+
+
+def _normalize(value) -> str:
+    """匹配前归一化：小写 + 分隔符归一 + 空白折叠 + 中文间隙剔除。
+
+    不做 strip：保留首尾空格，使关键词自身的锚点（如 "format " 的尾随
+    空格）在值与关键词两侧语义一致。
+    """
+    text = str(value).lower().translate(_SEP_TO_SPACE)
+    text = re.sub(r"\s+", " ", text)
+    return _CJK_GAP.sub(r"\1", text)
+
+
+def _combo_tokens(text: str) -> set:
+    """组合键 token 集：拆 "+" 并去掉 token 两侧空白。"""
+    return {t.strip() for t in text.split("+")}
+
+
+def _hit(value: str, keyword: str) -> bool:
+    """单个 contains 关键词是否命中。
+
+    双方都含 "+" 时按组合键处理：token 集合相等即命中（键序无关）；
+    其余情形保持子串匹配。
+    """
+    if "+" in keyword and "+" in value:
+        return _combo_tokens(value) == _combo_tokens(keyword)
+    return keyword in value
+
+
 def evaluate(tool_name: str, args: dict) -> tuple:
-    """返回 (risk, reason)。risk ∈ none/medium/high"""
+    """返回 (risk, reason)。risk ∈ none/medium/high
+
+    fail-closed：工具名非 str 或 args 非 dict 时无法评估参数内容，
+    一律按 high 拒绝（非法入参不抛异常、也不静默放行）。
+    """
+    if not isinstance(tool_name, str) or not isinstance(args, dict):
+        return ("high",
+                f"参数类型异常（tool={type(tool_name).__name__}, "
+                f"args={type(args).__name__}），无法评估风险，按高危拦截")
     for rule in RULES:
         if tool_name not in rule["tools"]:
             continue
         value = args.get(rule.get("param", ""), "")
         if isinstance(value, (list, tuple)):
             value = "+".join(str(v) for v in value)
-        value = str(value).lower()
+        value = _normalize(value)
         if not value:
             continue
         for kw in rule.get("contains", []):
-            if kw.lower() in value:
+            if _hit(value, _normalize(kw)):
                 return rule["risk"], rule["reason"]
         for kw in rule.get("equals", []):
-            if value == kw.lower():
+            if value == _normalize(kw):
                 return rule["risk"], rule["reason"]
     return "none", ""
