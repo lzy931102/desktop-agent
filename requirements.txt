@@ -1,6 +1,9 @@
-pyautogui==0.9.54
-opencv-python==4.10.0.84
-pillow==10.4.0
+# 版本声明一律用 >= 下限（对应实测通过的版本），不用 == 固定：
+# 固定版本会让新 Python（3.13/3.14）源码安装被旧包卡死，
+# 且 pillow 10.4.0 有 17 条在案漏洞通告（修复于 12.3.0）。
+pyautogui>=0.9.54
+opencv-python>=4.10.0.84
+pillow>=12.3.0
 customtkinter>=5.2.2
 requests>=2.31.0
 pyperclip>=1.8.2

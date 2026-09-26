@@ -2,7 +2,7 @@
 
 ![Screenshot](docs/screenshot.png)
 
-![Python](https://img.shields.io/badge/Python-3.8+-blue)
+![Python](https://img.shields.io/badge/Python-3.10+-blue)
 ![License](https://img.shields.io/badge/License-MIT-green)
 ![Tests](https://img.shields.io/badge/Tests-27%20passed-brightgreen)
 ![Platform](https://img.shields.io/badge/Platform-Windows-lightgrey)
