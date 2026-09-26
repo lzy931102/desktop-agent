@@ -986,6 +986,13 @@ class DesktopAgent:
                         continue
                     self._log(f"[确认] 「{name}」已获用户批准（{reason}）")
 
+                elif risk == "medium":
+                    # medium 分级：不拦截，但与 none 的静默放行区分开——
+                    # 记一条专属审计事件（进哈希链）+ 界面提示行，操作照常执行
+                    if self.auditor:
+                        self.auditor.emit("medium_risk", tool=name, reason=reason)
+                    self._log(f"[敏感操作] {name}：{reason}（已放行并记入审计）")
+
                 if self.on_tool_call:
                     self.on_tool_call(name, args)
                 else:
