@@ -28,6 +28,11 @@ from core.scheduler import Scheduler
 from core.settings import CLOUD_PRESETS, PROVIDER_ENUM, Settings, resolve_api_key
 
 try:
+    from plugin_system import PluginManager
+except ImportError:
+    PluginManager = None  # 插件系统未安装，fallback 到纯内置工具
+
+try:
     from PIL import Image
 except ImportError:
     Image = None
@@ -251,8 +256,15 @@ class TaskSession:
                 app.settings,
                 on_fallback=lambda err: self.ui_queue.put(
                     ("log", f"⚠ 本地模型调用失败，自动切换云端：{err[:60]}")))
+
+            # 插件管理器（可选）：有插件目录就创建，没有则跳过
+            plugins = None
+            if PluginManager is not None:
+                from core.paths import plugins_dir
+                plugins = PluginManager(app.settings, directory=plugins_dir())
+
             agent = DesktopAgent(llm, auditor=app.audit, history=app.history,
-                                 approval=self.approval)
+                                 approval=self.approval, plugins=plugins)
             agent.on_log = lambda m: self.ui_queue.put(("log", m))
             agent.on_tool_call = lambda n, a: self.ui_queue.put(("tool_call", (n, a)))
             agent.on_tool_result = lambda n, a, r: self.ui_queue.put(
@@ -660,9 +672,11 @@ class AgentGUI:
                       text_color=TEXT, hover_color=CARD_2,
                       font=ctk.CTkFont(size=13), anchor="w",
                       command=self._show_settings).pack(fill="x")
-        ctk.CTkLabel(bottom, text="🔌 插件（即将上线）", height=22,
-                     font=ctk.CTkFont(size=11), text_color=FAINT).pack(
-            anchor="w", pady=(8, 0))
+        ctk.CTkButton(bottom, text="🔌 插件", height=32, corner_radius=8,
+                      fg_color="transparent", border_width=1, border_color=BORDER,
+                      text_color=TEXT, hover_color=CARD_2,
+                      font=ctk.CTkFont(size=13), anchor="w",
+                      command=self._show_plugins).pack(fill="x", pady=(6, 0))
 
         # ---- 主区 ----
         main = ctk.CTkFrame(body, fg_color="transparent")
@@ -1373,6 +1387,123 @@ class AgentGUI:
         box.configure(state="normal")
         box.insert("1.0", text or "还没有任务记录")
         box.configure(state="disabled")
+
+    def _show_plugins(self):
+        dlg = ctk.CTkToplevel(self.root, fg_color=BG)
+        dlg.title("插件")
+        dlg.geometry("640x700")
+        attach_modal_dialog(dlg, self.root)
+
+        body = ctk.CTkFrame(dlg, fg_color="transparent")
+        body.pack(fill="both", expand=True, padx=18, pady=14)
+        ctk.CTkLabel(body, text="🔌 插件", font=ctk.CTkFont(size=16, weight="bold"),
+                     text_color=TEXT).pack(anchor="w")
+
+        # 插件列表
+        list_frame = ctk.CTkFrame(body, fg_color=CARD, corner_radius=10,
+                                  border_width=1, border_color=BORDER)
+        list_frame.pack(fill="x", pady=(12, 0))
+
+        from core.paths import plugins_dir
+        from plugin_system import PluginManager
+
+        manager = PluginManager(self.settings, directory=plugins_dir())
+        infos = manager.list()
+
+        if not infos:
+            ctk.CTkLabel(list_frame, text="插件目录为空",
+                         font=ctk.CTkFont(size=12), text_color=MUTED).pack(
+                padx=12, pady=16)
+
+        for info in infos:
+            row = ctk.CTkFrame(list_frame, fg_color="transparent")
+            row.pack(fill="x", padx=12, pady=8)
+            row.pack_propagate(False)
+
+            # 状态徽章
+            status_icon = STATUS_ICON.get(info.status, "·")
+            status_text = STATUS_TEXT.get(info.status, "未知")
+            status_color = STATUS_COLOR.get(info.status, FAINT)
+            ctk.CTkLabel(row, text=f"{status_icon} {status_text}",
+                         font=ctk.CTkFont(size=11), text_color=status_color).pack(
+                side="left", padx=(0, 8))
+
+            # 插件信息
+            info_frame = ctk.CTkFrame(row, fg_color="transparent")
+            info_frame.pack(side="left", fill="both", expand=True)
+
+            name_lbl = ctk.CTkLabel(info_frame, text=info.display_name,
+                                    font=ctk.CTkFont(size=13, weight="bold"),
+                                    text_color=TEXT)
+            name_lbl.pack(anchor="w")
+
+            if info.version or info.description:
+                meta = []
+                if info.version:
+                    meta.append(f"v{info.version}")
+                if info.description:
+                    meta.append(info.description[:40] + "…" if len(info.description) > 40 else info.description)
+                ctk.CTkLabel(info_frame, text=" · ".join(meta),
+                             font=ctk.CTkFont(size=11), text_color=MUTED).pack(
+                    anchor="w", pady=(2, 0))
+
+            # 错误信息（如果有）
+            if info.error:
+                ctk.CTkLabel(info_frame, text=f"错误: {info.error[:60]}…",
+                             font=ctk.CTkFont(size=10), text_color=ERR).pack(
+                    anchor="w", pady=(4, 0))
+
+            # 开关
+            enabled_var = ctk.BooleanVar(value=info.enabled)
+            switch = ctk.CTkSwitch(row, text="", variable=enabled_var,
+                                   progress_color=ACCENT, text_color=TEXT,
+                                   font=ctk.CTkFont(size=11),
+                                   command=lambda i=info, e=enabled_var:
+                                   manager.set_enabled(i.stem, e.get()))
+            switch.pack(side="right", padx=(8, 0))
+            switch.select() if info.enabled else switch.deselect()
+
+        # 底部按钮区
+        btn_frame = ctk.CTkFrame(body, fg_color="transparent")
+        btn_frame.pack(fill="x", pady=(16, 0))
+
+        def open_dir():
+            import subprocess, sys
+            try:
+                if sys.platform == "win":
+                    subprocess.Popen(["explorer", str(plugins_dir())])
+                elif sys.platform == "darwin":
+                    subprocess.Popen(["open", str(plugins_dir())])
+                else:
+                    subprocess.Popen(["xdg-open", str(plugins_dir())])
+            except Exception:
+                pass
+
+        def refresh():
+            manager.reload()
+            self._show_plugins()
+            self.add("system", text="✓ 插件列表已刷新", tone="ok")
+
+        def gen_sample():
+            from plugin_system.sample import SAMPLE_FILENAME, SAMPLE_PLUGIN_SOURCE
+            plugins_dir().mkdir(parents=True, exist_ok=True)
+            sample_path = plugins_dir() / SAMPLE_FILENAME
+            sample_path.write_text(SAMPLE_PLUGIN_SOURCE, encoding="utf-8")
+            manager.reload()
+            self._show_plugins()
+            self.add("system", text=f"✓ 已生成示例插件：{SAMPLE_FILENAME}", tone="ok")
+
+        ctk.CTkButton(btn_frame, text="📂 打开插件目录", height=32,
+                      fg_color=CARD_2, hover_color=BORDER, text_color=TEXT,
+                      command=open_dir).pack(side="left", padx=(0, 8))
+        ctk.CTkButton(btn_frame, text="🔄 刷新", height=32,
+                      fg_color=CARD_2, hover_color=BORDER, text_color=TEXT,
+                      command=refresh).pack(side="left", padx=(0, 8))
+        ctk.CTkButton(btn_frame, text="✨ 生成示例插件", height=32,
+                      fg_color=ACCENT, hover_color=ACCENT_HOVER, text_color=TEXT,
+                      command=gen_sample).pack(side="left", padx=(0, 0))
+
+        dlg.destroy()
 
     def _show_settings(self):
         dlg = ctk.CTkToplevel(self.root, fg_color=BG)
