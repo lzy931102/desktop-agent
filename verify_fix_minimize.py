@@ -14,7 +14,9 @@
   D. 点「□」最大化 → showCmd==3；再点还原
   E. 点「×」→ 窗口销毁
   F. 主窗口「—」最小化 → showCmd==2 → 恢复（主界面回归）
-所有点击坐标按窗口实时 rect 计算；每步打印 PASS/FAIL。
+所有点击坐标按窗口实时 rect 计算，每个点击阶段前先置顶目标窗口
+（raise_top，避免点击被重叠窗口截走——exe 实测曾因此误报 D/E/F 失败）；
+每步打印 PASS/FAIL。
 """
 import ctypes
 import ctypes.wintypes as wt
@@ -91,6 +93,13 @@ def exstyle_of(hwnd):
     return user32.GetWindowLongW(hwnd, -16)   # GWL_EXSTYLE
 
 
+def raise_top(hwnd):
+    """置顶目标窗口：桌面窗口多、z-order 变动频繁，
+    每个点击阶段前都置顶一次，避免点击被重叠窗口截走。"""
+    user32.SetWindowPos(hwnd, -1, 0, 0, 0, 0, 0x0001 | 0x0002)   # TOPMOST+NOSIZE+NOMOVE
+    time.sleep(0.6)
+
+
 def main(pid):
     # ---- A ----
     hwnd_main = wait_window("Desktop Agent - 智能桌面助手", pid)
@@ -108,6 +117,7 @@ def main(pid):
     time.sleep(1.0)
 
     # ---- B. 点「—」----
+    raise_top(hwnd_set)
     rs = rect_of(hwnd_set)
     pyautogui.click(rs.right - 122, rs.top + 15)
     time.sleep(1.5)
@@ -134,6 +144,7 @@ def main(pid):
           f"showCmd={cmd} rect=({rs.left},{rs.top})")
 
     # ---- D. □ 最大化 / 还原 ----
+    raise_top(hwnd_set)
     rs = rect_of(hwnd_set)
     pyautogui.click(rs.right - 77, rs.top + 15)
     time.sleep(1.5)
@@ -146,6 +157,7 @@ def main(pid):
         check("D2 再点「□」还原", show_cmd(hwnd_set) != 3)
 
     # ---- E. × 关闭 ----
+    raise_top(hwnd_set)
     rs = rect_of(hwnd_set)
     pyautogui.click(rs.right - 32, rs.top + 15)
     time.sleep(1.5)
@@ -160,8 +172,9 @@ def main(pid):
               f"IsWindowEnabled={enabled}")
         rm = rect_of(hwnd_main)
         # 移出遮挡区并置顶，排除其他窗口截走点击的干扰
-        user32.SetWindowPos(hwnd_main, -1, 40, 40, 0, 0, 0x0001 | 0x0004)
+        user32.SetWindowPos(hwnd_main, -1, 40, 40, 0, 0, 0x0001)
         time.sleep(0.6)
+        raise_top(hwnd_main)
         rm = rect_of(hwnd_main)
         pyautogui.screenshot("screenshots/verify_f1_before.png")
         pyautogui.click(rm.right - 122, rm.top + 15)
