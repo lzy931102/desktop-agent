@@ -16,7 +16,9 @@ evaluate() 对每次工具调用做风险评估，返回 (risk, reason)：
   超集命中仅限白名单修饰键（ctrl+shift+w 命中 ctrl+w；ctrl+shift+s 不拦）；
 - 含 "/" 的命令关键词（del /f、rd /s）按"命令语境"匹配：/ 两侧空白任意，
   但命令词前不能是单词字符、/ 或 \\（排除路径/URL），旗标后必须是空白、
-  结尾或 shell 分隔符（排除 del/file.txt 这类相对路径）。
+  结尾或 shell 分隔符（排除 del/file.txt 这类相对路径）；
+- format 按"命令+盘符"目标形态校验（第三期）：format+分隔符+盘符才拦，
+  date format 等普通文本不误拦（修复前按 "format " 前缀子串误判）。
 不入参假设：非 str 工具名或非 dict args 一律视为无法评估，按 high 拒绝
 （fail-closed），不抛异常。
 """
@@ -97,6 +99,19 @@ _SEP_TO_SPACE = str.maketrans({
 _CJK_CHARS = "\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff"
 _CJK_NOISE = re.compile(f"([{_CJK_CHARS}])[\\W_]+(?=[{_CJK_CHARS}])")
 
+# format 目标形态校验用的保留型归一化：只有空白转空格，冒号/分号/逗号
+# （含全角）保留原样——盘符的 ":" 是危险形态信号，不能被分隔符归一化吃掉
+# （否则 "format:C:" 会因冒号被转空格而丢失盘符特征）。
+_WS_TO_SPACE = str.maketrans({"\t": " ", "\n": " ", "\r": " "})
+
+# format + 可选旗标 + 分隔符 + 盘符 才判危险（第三期拍板）：
+# - 命令词锚点与斜杠关键词同款（排除 xformat/reformat/platform 等连字词）；
+# - 旗标可粘连可带空白（format /q d:、format/q d:）；
+# - 分隔符收空白与冒号/分号/逗号（含全角，覆盖 "format:C:" "format, C:"）；
+# - 目标必须是 盘符字母+":"（"date format: YYYY-MM-DD" 无盘符形态，不拦）。
+_FORMAT_TARGET = re.compile(
+    r"(?<![\w/\\])format(?:\s*/[^\s]*)*[\s:：;；,，]+[a-z]\s*:")
+
 
 def _normalize(value) -> str:
     """匹配前归一化：小写 + 分隔符归一 + 空白折叠 + 中文间隙剔除。
@@ -105,6 +120,16 @@ def _normalize(value) -> str:
     空格）在值与关键词两侧语义一致。
     """
     text = str(value).lower().translate(_SEP_TO_SPACE)
+    text = re.sub(r"\s+", " ", text)
+    return _CJK_NOISE.sub(r"\1", text)
+
+
+def _normalize_keep_target_seps(value) -> str:
+    """保留型归一化（仅 format 目标形态校验用）：除空白外不转义分隔符。
+
+    与 _normalize 的差异：冒号/分号/逗号保留原样，见 _FORMAT_TARGET 注释。
+    """
+    text = str(value).lower().translate(_WS_TO_SPACE)
     text = re.sub(r"\s+", " ", text)
     return _CJK_NOISE.sub(r"\1", text)
 
@@ -148,8 +173,12 @@ def _combo_tokens(text: str) -> set:
     return {_normalize(t).strip() for t in text.split("+")}
 
 
-def _hit(value: str, keyword: str) -> bool:
-    """单个 contains 关键词是否命中。"""
+def _hit(value: str, value_keep: str, keyword: str) -> bool:
+    """单个 contains 关键词是否命中。
+
+    value        常规归一化后的值（分隔符已转空格，供子串/组合键/斜杠匹配）
+    value_keep   保留型归一化后的值（冒号/逗号原样，仅 format 目标校验用）
+    """
     if "+" in keyword:
         # 组合键：键序无关 + 白名单超集
         if "+" not in value:
@@ -162,6 +191,11 @@ def _hit(value: str, keyword: str) -> bool:
     if "/" in keyword:
         # 命令斜杠：限命令语境（见 _slash_regex）
         return _slash_regex(keyword).search(value) is not None
+    if keyword.strip() == "format":
+        # format 目标形态校验（第三期拍板）：只有 format+分隔符+盘符才拦。
+        # 修复前按 "format " 前缀子串匹配，"date format: YYYY-MM-DD" 等
+        # 正常文本被误判 high。
+        return _FORMAT_TARGET.search(value_keep) is not None
     return keyword in value
 
 
@@ -178,14 +212,15 @@ def evaluate(tool_name: str, args: dict) -> tuple:
     for rule in RULES:
         if tool_name not in rule["tools"]:
             continue
-        value = args.get(rule.get("param", ""), "")
-        if isinstance(value, (list, tuple)):
-            value = "+".join(str(v) for v in value)
-        value = _normalize(value)
+        raw = args.get(rule.get("param", ""), "")
+        if isinstance(raw, (list, tuple)):
+            raw = "+".join(str(v) for v in raw)
+        value = _normalize(raw)
         if not value:
             continue
+        value_keep = _normalize_keep_target_seps(raw)
         for kw in rule.get("contains", []):
-            if _hit(value, _normalize(kw)):
+            if _hit(value, value_keep, _normalize(kw)):
                 return rule["risk"], rule["reason"]
         for kw in rule.get("equals", []):
             if value == _normalize(kw):
