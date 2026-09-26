@@ -5,12 +5,18 @@ evaluate() 对每次工具调用做风险评估，返回 (risk, reason)：
 - "medium" 敏感操作：记录审计 + 界面提示，不打断
 - "high"   危险操作：必须经过 approval 确认才执行
 
-匹配按防对抗标准设计（issue #2），参数值与关键词在比对前做同构归一化：
+匹配按防对抗标准设计（issue #2，两期），参数值与关键词在比对前做同构归一化：
 - 统一小写；
-- 分隔符归一化：制表符/换行/冒号 → 空格，连续空白折叠为单空格；
-- 中文间隙剔除：夹在两个中文字符之间的空白删除（"删 除" → "删除"），
-  英文词间空格保留（"format C" 不受影响）；
-- 组合键按 token 集合比对：键序无关（["f4","alt"] 命中 "alt+f4"）。
+- 分隔符归一化：制表符/换行/半角冒号/分号/逗号及全角冒号/分号/逗号 → 空格，
+  连续空白折叠为单空格；
+- 中文间隙剔除：夹在两个中文字符之间的标点/符号/空白删除
+  （"删 除"→"删除"，"删、除"→"删除"）；字母/数字/汉字不剔
+  （"删x除" 不并词，防误伤）；英文词间空格保留（"format C" 不受影响）；
+- 组合键按 token 集合匹配：键序无关（["f4","alt"] 命中 "alt+f4"），
+  超集命中仅限白名单修饰键（ctrl+shift+w 命中 ctrl+w；ctrl+shift+s 不拦）；
+- 含 "/" 的命令关键词（del /f、rd /s）按"命令语境"匹配：/ 两侧空白任意，
+  但命令词前不能是单词字符、/ 或 \\（排除路径/URL），旗标后必须是空白、
+  结尾或 shell 分隔符（排除 del/file.txt 这类相对路径）。
 不入参假设：非 str 工具名或非 dict args 一律视为无法评估，按 high 拒绝
 （fail-closed），不抛异常。
 """
@@ -75,13 +81,21 @@ def is_retryable(tool_name: str) -> bool:
     return tool_name in RETRYABLE_TOOLS
 
 
-# 分隔符归一化：这些字符在匹配语境里等价于空格（制表符/换行/半角冒号）。
-# 注意不收分号/逗号/全角冒号——它们是待拍板的扩展项（见测试 xfail 清单）。
-_SEP_TO_SPACE = str.maketrans({"\t": " ", "\n": " ", "\r": " ", ":": " "})
+# 分隔符归一化：这些字符在匹配语境里等价于空格。
+# 半角：制表符/换行/冒号/分号/逗号；全角：冒号/分号/逗号（中文输入法自动产生
+# 的同族变体，2026-09-26 第二期拍板纳入，如需收窄删对应行即可）。
+# 注意不收斜杠/竖线/脱字符等——它们各有独立处理或属待拍板项（见测试 xfail 清单）。
+_SEP_TO_SPACE = str.maketrans({
+    "\t": " ", "\n": " ", "\r": " ",
+    ":": " ", ";": " ", ",": " ",
+    "：": " ", "；": " ", "，": " ",
+})
 
-# 夹在两个 CJK 字符之间的空白（CJK 统一表意文字 + 扩展A + 兼容表意文字）。
+# 夹在两个 CJK 字符之间的"非构词字符"剔除：标点/符号/空白（\\W）加下划线。
+# 字母、数字、汉字本身是 \\w，不会被剔（"删x除" 不并词）；CJK 统一表意文字
+# + 扩展A + 兼容表意文字视为构词。
 _CJK_CHARS = "\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff"
-_CJK_GAP = re.compile(f"([{_CJK_CHARS}]) (?=[{_CJK_CHARS}])")
+_CJK_NOISE = re.compile(f"([{_CJK_CHARS}])[\\W_]+(?=[{_CJK_CHARS}])")
 
 
 def _normalize(value) -> str:
@@ -92,22 +106,62 @@ def _normalize(value) -> str:
     """
     text = str(value).lower().translate(_SEP_TO_SPACE)
     text = re.sub(r"\s+", " ", text)
-    return _CJK_GAP.sub(r"\1", text)
+    return _CJK_NOISE.sub(r"\1", text)
+
+
+# 组合键超集白名单（第二期拍板）：值键集合包含关键词全部键、且多出的键
+# 全部落在白名单内才命中；白名单外（如 +esc/+win/+字母键）不命中。
+# 只收 ctrl/shift/alt 三个修饰键家族中该组合未用到的键——这三个键叠加
+# 不改变"关闭/删除"意图的可辨识度，且这些超集组合无日常良性用途；
+# win 系组合多为系统级语义，pyautogui 支持也参差，不纳入。
+_COMBO_EXTRA_KEYS = {
+    frozenset({"alt", "f4"}): frozenset({"ctrl", "shift"}),
+    frozenset({"shift", "delete"}): frozenset({"ctrl", "alt"}),
+    frozenset({"ctrl", "w"}): frozenset({"shift", "alt"}),
+}
+
+# 含 "/" 的命令关键词匹配缓存（del /f、rd /s）
+_slash_pattern_cache = {}
+
+
+def _slash_regex(keyword: str):
+    """命令斜杠关键词 → 带语境锚点的正则。
+
+    - "/" 两侧空白任意（"del /f" "del/ f" "del / f" "del/f" 等价）；
+    - 命令词前禁止单词字符、"/" 或 "\\"：排除 /home/del/f.txt、
+      C:\\del\\x、toward/south 这类路径与连字词；
+    - 旗标后必须是结尾/空白/shell 分隔符：排除 del/file.txt 这类
+      "旗标后紧跟路径续文"的相对路径形态。
+    """
+    pat = _slash_pattern_cache.get(keyword)
+    if pat is None:
+        body = r"\s*/\s*".join(
+            r"\s+".join(re.escape(tok) for tok in part.split())
+            for part in keyword.split("/"))
+        pat = re.compile(rf"(?<![\w/\\]){body}(?=$|[\s;&|<>])")
+        _slash_pattern_cache[keyword] = pat
+    return pat
 
 
 def _combo_tokens(text: str) -> set:
-    """组合键 token 集：拆 "+" 并去掉 token 两侧空白。"""
-    return {t.strip() for t in text.split("+")}
+    """组合键 token 集：拆 "+"，逐 token 归一化并去两侧空白。"""
+    return {_normalize(t).strip() for t in text.split("+")}
 
 
 def _hit(value: str, keyword: str) -> bool:
-    """单个 contains 关键词是否命中。
-
-    双方都含 "+" 时按组合键处理：token 集合相等即命中（键序无关）；
-    其余情形保持子串匹配。
-    """
-    if "+" in keyword and "+" in value:
-        return _combo_tokens(value) == _combo_tokens(keyword)
+    """单个 contains 关键词是否命中。"""
+    if "+" in keyword:
+        # 组合键：键序无关 + 白名单超集
+        if "+" not in value:
+            return False
+        kw = _combo_tokens(keyword)
+        vt = _combo_tokens(value)
+        if not kw <= vt:
+            return False
+        return (vt - kw) <= _COMBO_EXTRA_KEYS.get(frozenset(kw), frozenset())
+    if "/" in keyword:
+        # 命令斜杠：限命令语境（见 _slash_regex）
+        return _slash_regex(keyword).search(value) is not None
     return keyword in value
 
 

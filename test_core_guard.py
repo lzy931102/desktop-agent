@@ -10,14 +10,21 @@
   超时视为拒绝
 - AutoDenyPolicy：无界面环境默认全拒
 
-issue #2 的 4 项缺口已修复（修复前行为见各用例 docstring）：
+issue #2 第一期已修复 4 项缺口（修复前行为见各用例 docstring）：
 - hotkey 组合键乱序/大小写/含空格 → 按 token 集合匹配，键序无关
 - type_text 分隔符变体（制表符/冒号/连续空白）→ 匹配前分隔符归一化
-- click_ui_element 名称插空格 → 中文间隙剔除（英文词间空格保留）
+- click_ui_element 名称插空白 → 中文间隙剔除（英文词间空格保留）
 - evaluate 非 dict args / 非 str 工具名 → fail-closed 返回 high，不抛异常
 
-仍存在的绕过变体用 xfail 固化（分隔符集合扩展、组合键超集、字符插入、
-裸关键词），属规则内容/策略扩展，待拍板，不在匹配逻辑修复范围内。
+第二期（2026-09-26）闭环 6 类变体：
+- 分号/逗号/全角冒号/全角分号/全角逗号 → 纳入分隔符归一化集合
+- 斜杠位移 → 命令语境锚点匹配（del/f、del/ f 命中；路径/URL 绝对不动）
+- 组合键超集 → 白名单修饰键（ctrl+shift+w 命中；ctrl+shift+s 不拦）
+- CJK 间标点/符号插入 → 中文间隙剔除升级（删、除 命中；删x除 明确不修）
+- 裸词 → 判定表决策（format 不拦、shutdown 维持裸词命中）
+
+仍存在的绕过变体用 xfail 固化：字母/数字插入（明确不修）、多旗标连写
+（del/faq）、cmd 脱字符转义（d^el）——后两者为第二期新发现，待拍板。
 """
 import threading
 import time
@@ -208,44 +215,157 @@ def test_valid_args_still_work_after_type_guard():
     assert guard.evaluate("screenshot", {}) == ("none", "")
 
 
-# ==================== 仍存在的绕过变体：xfail 固化，待拍板（勿顺手修） ====================
-# 这些属于"分隔符集合扩展 / 匹配策略升级 / 规则内容调整"，超出本次匹配逻辑
-# 修复范围。修复拍板后：删除对应 xfail 标记并让用例转正。
+# ==================== 第二期：分号/逗号/全角分隔符（修复验证） ====================
 
-@pytest.mark.xfail(reason="待拍板：分号/逗号/全角冒号不在分隔符归一化集合内，扩展需评估误伤", strict=True)
 @pytest.mark.parametrize("text", [
-    "format;C:",              # 分号分隔
-    "format, C:",             # 逗号分隔
-    "format：C:",             # 全角冒号（中文输入法常见）
-    "del/ f a.txt",           # 斜杠位移（空格挪位）
+    "format;C:",              # 修复前：分号不在分隔符集合，不命中 "format " → 绕过
+    "format, C:",             # 修复前：逗号变体绕过
+    "format；C:",             # 修复前：全角分号变体绕过
+    "format，C:",             # 修复前：全角逗号变体绕过
+    "reg,delete HKLM",        # 修复前：逗号拆散 "reg delete" → 绕过
 ])
-def test_bypass_remaining_separators(text):
+def test_fix_semicolon_comma_variants_blocked(text):
+    """分号/逗号（含全角族）纳入分隔符归一化，与制表符/冒号同机制。"""
     assert guard.evaluate("type_text", {"text": text})[0] == "high"
 
 
-@pytest.mark.xfail(reason="待拍板：组合键超集（多按的修饰键变体）当前不命中，超集匹配有误伤风险", strict=True)
-@pytest.mark.parametrize("keys", [
-    ["ctrl", "shift", "w"],   # ctrl+shift+w：浏览器关闭整个窗口
-    ["alt", "ctrl", "f4"],    # ctrl+alt+f4：alt+f4 超集
+@pytest.mark.parametrize("text", [
+    "format：C:",             # 修复前：全角冒号不在集合 → 绕过
+    "del：/f a.txt",          # 修复前：全角冒号拆散 "del /f" → 绕过
+    "shutdown：/s",           # 修复前：同上
 ])
-def test_bypass_combo_superset(keys):
+def test_fix_fullwidth_colon_variants_blocked(text):
+    """全角冒号（中文输入法自动产生）纳入分隔符归一化。"""
+    assert guard.evaluate("type_text", {"text": text})[0] == "high"
+
+
+@pytest.mark.parametrize("text", [
+    "hello, world",                  # 正常英文逗号句
+    "time: 12:30; meeting room",     # 时间表达
+    "注意：今晚八点开会",             # 中文冒号句
+    "C:/Users/foo; D:/bar",          # 盘符路径列表
+])
+def test_separator_expansion_no_false_positives(text):
+    """对照：分隔符集合扩展不得误伤正常含分号/逗号/冒号/盘符的文本。"""
+    assert guard.evaluate("type_text", {"text": text}) == ("none", "")
+
+
+# ==================== 第二期：斜杠位移（命令语境限定修复） ====================
+
+@pytest.mark.parametrize("text", [
+    "del/ f a.txt",           # 修复前：斜杠后置空格，子串不命中 → 绕过
+    "del / f a.txt",          # 修复前：两侧空格 → 绕过
+    "del/f a.txt",            # 修复前：零空格 → 绕过（del/f 是可执行命令形态）
+    "rd/s c:\\temp",          # 修复前：rd 零空格 → 绕过
+])
+def test_fix_slash_displacement_blocked(text):
+    """含 / 的命令关键词（del /f、rd /s）改为命令语境匹配：/ 两侧空白任意。"""
+    assert guard.evaluate("type_text", {"text": text})[0] == "high"
+
+
+@pytest.mark.parametrize("text", [
+    "echo hi && del /f x",    # 命令链中段（修前即命中，回归对照）
+    "del /f",                 # 结尾形态（修前即命中，回归对照）
+])
+def test_slash_command_context_controls_blocked(text):
+    """对照：常规命令形态在锚点化之后仍命中，不因语境限定漏掉。"""
+    assert guard.evaluate("type_text", {"text": text})[0] == "high"
+
+
+@pytest.mark.parametrize("text", [
+    "/home/del/f.txt",                # unix 绝对路径
+    "del/file.txt",                   # 相对路径（旗标后紧跟路径续文）
+    "https://example.com/del/file",   # URL
+    "https://example.com/rd/status",  # URL 路径段含 rd/s
+    "C:\\del\\file.txt",              # windows 反斜杠路径
+    "toward/south",                   # 英文连字词（rd/s 语境不成立）
+    "copy C:/data /backup",           # 正常路径操作
+])
+def test_slash_hard_constraint_paths_urls_untouched(text):
+    """硬约束：路径/URL 里的 / 绝对不当命令分隔处理——命令词锚点 + 旗标后边界。"""
+    assert guard.evaluate("type_text", {"text": text}) == ("none", "")
+
+
+# ==================== 第二期：组合键超集白名单（修复验证） ====================
+
+@pytest.mark.parametrize("keys", [
+    ["ctrl", "shift", "w"],      # 修复前：超集不命中 ctrl+w → 绕过（Chrome 关整个窗口）
+    ["alt", "ctrl", "f4"],       # 修复前：超集不命中 alt+f4 → 绕过
+    ["delete", "shift", "ctrl"], # shift+delete+ctrl（清除浏览数据家族）乱序
+    ["w", "shift", "ctrl"],      # 同上乱序
+])
+def test_fix_combo_superset_whitelist_blocked(keys):
+    """组合键超集白名单：多出的键全部在白名单修饰键内才命中，键序无关。"""
     assert guard.evaluate("hotkey", {"keys": keys})[0] == "high"
 
 
-@pytest.mark.xfail(reason="待拍板：非空白字符插入（含标点）需字符级策略，误伤面大", strict=True)
-@pytest.mark.parametrize("name", [
-    "删x除",                  # 字符插入
-    "删、除",                 # 标点插入
+@pytest.mark.parametrize("keys", [
+    ["ctrl", "shift", "s"],      # 另存为，良性
+    ["ctrl", "alt", "delete"],   # 系统安全屏组合（pyautogui 亦无法发送）
+    ["alt", "f4", "esc"],        # 白名单外功能键，无标准危险语义
+    ["alt", "f4", "win"],        # win 系组合不纳入白名单
+    ["ctrl", "w", "q"],          # 白名单外字母键
 ])
-def test_bypass_char_insertion(name):
+def test_combo_superset_no_overreach(keys):
+    """反例：超集白名单不得误拦良性/系统组合（判定表的"不命中"侧）。"""
+    assert guard.evaluate("hotkey", {"keys": keys}) == ("none", "")
+
+
+# ==================== 第二期：CJK 间标点剔除（修复验证） ====================
+
+@pytest.mark.parametrize("name", [
+    "删、除",                 # 修复前：顿号插字 → 绕过
+    "删。除",                 # 修复前：句号插字 → 绕过
+    "删，除",                 # 修复前：全角逗号插字 → 绕过
+    "删-除",                  # 修复前：连字符插字 → 绕过
+    "删/除",                  # 修复前：斜杠插字 → 绕过
+    "退!出",                  # 修复前：感叹号插字 → 绕过
+    "格,式,化",               # 修复前：逗号插字（经分隔符归一化后仍需中文间隙剔除收尾）
+    "格.式.化",               # 修复前：点号插字 → 绕过
+])
+def test_fix_cjk_punctuation_injection_blocked(name):
+    """中文间隙剔除升级：两个中文字符之间的标点/符号/空白一并剔除。"""
     assert guard.evaluate("click_ui_element", {"name": name})[0] == "high"
 
 
-@pytest.mark.xfail(reason="待拍板：裸关键词无分隔符可归一化，属规则内容调整（加裸词会误伤 reformat 等）", strict=True)
-def test_bypass_bare_keyword():
-    """裸 "format"（后无任何分隔符）从未命中过——规则 "format " 依赖锚点，
-    修复归一化不改变它；需规则内容层面拍板。"""
-    assert guard.evaluate("type_text", {"text": "format"})[0] == "high"
+# ==================== 第二期：裸词判定（决策固化，非缺陷修复） ====================
+
+def test_decision_bare_format_not_blocked():
+    """裸词判定（拍板：不拦）：format 危险语义在 "format <目标>"，裸词命中会
+    误伤 reformat/formats 等高频正常文本；关键词 "format " 的尾随空格锚点保留。"""
+    assert guard.evaluate("type_text", {"text": "format"}) == ("none", "")
+    assert guard.evaluate("type_text", {"text": "reformat"}) == ("none", "")
+    assert guard.evaluate("type_text", {"text": "formats"}) == ("none", "")
+
+
+def test_decision_bare_shutdown_blocked():
+    """裸词判定（拍板：维持现状）：shutdown 关键词本就无锚点（裸词命中是
+    既有行为而非本期改动）， specificity 高、误伤面小，维持。"""
+    assert guard.evaluate("type_text", {"text": "shutdown"})[0] == "high"
+    assert guard.evaluate("type_text", {"text": "shutdown -s"})[0] == "high"
+
+
+# ==================== 第二期后仍存在的绕过变体：xfail 固化，待拍板 ====================
+
+@pytest.mark.xfail(reason="明确不修（第二期拍板）：字母/数字插入属对抗性构造，"
+                          "剔除会误伤正常中英混排（误伤面大），保持现状", strict=True)
+@pytest.mark.parametrize("name", ["删x除", "删1除", "删a除"])
+def test_wontfix_char_insertion_letters(name):
+    assert guard.evaluate("click_ui_element", {"name": name})[0] == "high"
+
+
+@pytest.mark.xfail(reason="第二期新发现，待拍板：多旗标连写（del/faq 即 del /f /a /q）"
+                          "被『旗标后须空白』的路径保护挡住；放开会误伤 del/file.txt 相对路径", strict=True)
+@pytest.mark.parametrize("text", ["del/faq a.txt", "rd/sq c:\\x"])
+def test_bypass_glued_multi_flag(text):
+    assert guard.evaluate("type_text", {"text": text})[0] == "high"
+
+
+@pytest.mark.xfail(reason="第二期新发现，待拍板：cmd 脱字符转义（d^el 即 del）需对拉丁词"
+                          "内做字符删除，误伤面大（a^b 等正常文本）", strict=True)
+@pytest.mark.parametrize("text", ["d^el /f a.txt", "del ^/f a.txt"])
+def test_bypass_cmd_caret_escape(text):
+    assert guard.evaluate("type_text", {"text": text})[0] == "high"
 
 
 def test_case_change_is_not_a_bypass():
