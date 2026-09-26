@@ -28,6 +28,7 @@ DEFAULTS = {
     },
     "minimize_to_tray": True,
     "feishu_webhook": "",  # 飞书群自定义机器人 Webhook（电脑↔手机消息通道）
+    "plugins": {"disabled": []},  # 停用的插件文件名（不含 .py）；停用的插件不加载不执行
 }
 
 # 云端服务商预设与对应的环境变量名

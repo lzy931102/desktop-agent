@@ -39,6 +39,12 @@ from core.retry import run_with_retry
 from core.settings import PROVIDER_ENUM, Settings, resolve_api_key, validate_public_https
 from core.verify import check_message_sent
 
+try:
+    from plugin_system import PluginManager
+except ImportError:
+    PluginManager = None  # 插件系统未安装，fallback 到纯内置工具
+    TOOLS_SCHEMA = TOOLS_SCHEMA  # 避免未定义引用
+
 
 def _send_feishu_impl(text: str) -> str:
     """发飞书群消息的 Agent 工具实现：webhook 取自本机设置"""
@@ -790,12 +796,16 @@ SYSTEM_PROMPT = """你是一个电脑操作助手，通过工具帮用户完成�
 class DesktopAgent:
     def __init__(self, llm: LLMClient = None, workdir: Path = None,
                  auditor: AuditLogger = None, history: TaskHistory = None,
-                 approval=None):
+                 approval=None, plugins=None):
         """auditor/history/approval 为企业化基础设施（core 包），依赖注入：
-        不传则无审计无历史，高危操作按 AutoDenyPolicy 拒绝。"""
+        不传则无审计无历史，高危操作按 AutoDenyPolicy 拒绝。
+
+        plugins: PluginManager 实例（可选）。若提供，插件工具会被合并到工具清单；
+        若不提供或 PluginManager 未安装，只使用内置工具（TOOL_FUNCTIONS）。
+        """
         self.workdir = workdir or Path.cwd()
         self.messages = [
-            {"role": "system", "content": SYSTEM_PROMPT}
+            {"role": "system", "content": SYSTEM_PROMPT + self._plugin_prompt}
         ]
         self.max_turns = 10
         self._image_located = False   # locate_on_screen 是否成功（供旧逻辑兼容）
@@ -815,12 +825,32 @@ class DesktopAgent:
         # 如果没有传入 LLM，使用 None（会在 run 时创建）
         self.llm = llm
 
+        # 插件工具合并（仅当 PluginManager 可用且未显式传 None 时）
+        self._plugin_tools = ()
+        if PluginManager is not None and plugins is not None:
+            self._plugin_tools = plugins.enabled_tools()
+            self._plugin_prompt = "\n\n已启用的扩展插件工具：\n" + "\n".join(
+                t["prompt_hint"] for t in self._plugin_tools)
+        else:
+            self._plugin_prompt = ""
+
     def stop(self):
         """请求停止执行，在下一轮开始前生效"""
         self._stop_requested = True
 
     def _execute_tool(self, name: str, args: dict, risk: str):
         """执行单个工具：重试（指数退避）+ 动作后校验，全部事件入审计"""
+        # 优先检查插件工具
+        if self._plugin_tools:
+            plugin_tool = next((t for t in self._plugin_tools if t.name == name), None)
+            if plugin_tool is not None:
+                try:
+                    result = str(plugin_tool.run(args))
+                except Exception as e:
+                    result = f"错误: 插件执行失败 - {type(e).__name__}: {str(e)[:100]}"
+                return result
+
+        # 内置工具
         if name not in TOOL_FUNCTIONS:
             return f"错误: 未知工具 {name}"
         retryable = risk != "high" and guard.is_retryable(name)
@@ -932,9 +962,15 @@ class DesktopAgent:
                 )
                 self.llm = LLMClient(config)
 
+            # 合并内置工具 + 插件工具（仅当有插件时）
+            if self._plugin_tools:
+                tools_schema = TOOLS_SCHEMA + [t.schema() for t in self._plugin_tools]
+            else:
+                tools_schema = TOOLS_SCHEMA
+
             # LLM 调用
             llm_start = time.time()
-            resp = self.llm.chat(self.messages, TOOLS_SCHEMA)
+            resp = self.llm.chat(self.messages, tools_schema)
             _u = resp.get("_usage") or {}
             self.total_tokens += (_u.get("prompt") or 0) + (_u.get("eval") or 0)
             self._log(f"思考用时 {time.time() - llm_start:.1f} 秒")

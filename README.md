@@ -23,6 +23,7 @@
 - **UIA 元素定位** - Windows UI Automation
 - **安全拦截** - 分级权限 + 白名单
 - **异常恢复** - 自动错误处理
+- **插件系统** - 独立插件模块，支持用户自定义工具（见 [插件开发指南](docs/插件开发指南.md)）
 
 ## 架构
 
@@ -200,7 +201,11 @@ desktop-agent/
 ├── agent_loop.py             # agent 主干（LLM 循环、工具调度）
 ├── agent_vision.py           # 工具包：视觉/窗口/UIA/剪贴板
 ├── core/                     # 基础设施：audit/guard/approval/history/scheduler/settings
+├── plugin_system/            # 插件系统独立模块（加载、启停、工具合并）
+├── examples/                 # 示例插件（示例插件-天气查询.py）
 ├── test_*.py                 # 测试文件
+├── test_plugin_system.py     # 插件系统独立测试（不 import agent_loop/gui）
+├── test_plugin_boundary.py   # 插件与内置工具清单一致性测试
 ├── requirements.txt          # 依赖
 ├── LICENSE                   # MIT License
 └── README.md                 # 项目说明
@@ -213,6 +218,12 @@ desktop-agent/
 - [OpenWorker](https://github.com/OpenWorkerAI/OpenWorker)
 - [GhostDesk](https://github.com/GhostDesk/GhostDesk)
 - [ScreenAgent](https://github.com/niuzaishen/ScreenAgent)
+
+## 插件开发
+
+- [插件模块化方案（建议稿）](docs/插件模块化方案.md)：整体设计与安全边界
+- [插件开发指南](docs/插件开发指南.md)：骨架、字段说明、常见问题
+- [示例插件源码](plugin_system/sample.py)：单一事实来源，生成插件时用
 
 ## 许可证
 
