@@ -23,8 +23,9 @@ issue #2 第一期已修复 4 项缺口（修复前行为见各用例 docstring�
 - CJK 间标点/符号插入 → 中文间隙剔除升级（删、除 命中；删x除 明确不修）
 - 裸词 → 判定表决策（format 不拦、shutdown 维持裸词命中）
 
-仍存在的绕过变体用 xfail 固化：字母/数字插入（明确不修）、多旗标连写
-（del/faq）、cmd 脱字符转义（d^el）——后两者为第二期新发现，待拍板。
+仍存在的绕过变体用 xfail 固化（第三期均已拍板，理由见各用例 docstring）：
+字母/数字插入——明确不修；多旗标连写（del/faq）——接受残余；
+cmd 脱字符转义（d^el）——不修。
 """
 import threading
 import time
@@ -381,17 +382,35 @@ def test_wontfix_char_insertion_letters(name):
     assert guard.evaluate("click_ui_element", {"name": name})[0] == "high"
 
 
-@pytest.mark.xfail(reason="第二期新发现，待拍板：多旗标连写（del/faq 即 del /f /a /q）"
-                          "被『旗标后须空白』的路径保护挡住；放开会误伤 del/file.txt 相对路径", strict=True)
+@pytest.mark.xfail(reason="决策（第三期拍板）：接受残余，不修。多旗标连写 del/faq 即 "
+                          "del /f /a /q；要拦它必须放松『旗标后须空白』的路径保护，"
+                          "会重新误伤 del/file.txt 这类相对路径，收益不抵风险", strict=True)
 @pytest.mark.parametrize("text", ["del/faq a.txt", "rd/sq c:\\x"])
 def test_bypass_glued_multi_flag(text):
+    """决策：接受残余，不修。
+
+    修复需要放开斜杠命令匹配的"旗标后边界"约束（当前要求旗标后是
+    空白/结尾/shell 分隔符，正是这条约束把 del/file.txt 相对路径排除在
+    命令判定之外）。放开后 del/faq 能拦，但 del/file.txt 会重新误伤。
+    两害相权：放过多旗标连写（对抗性构造，真实 LLM 少见），保住路径
+    硬约束（日常任务高频形态）。本用例固化该残余，若未来匹配策略
+    升级使它转正，strict xfail 会报错提醒更新本决策。"""
     assert guard.evaluate("type_text", {"text": text})[0] == "high"
 
 
-@pytest.mark.xfail(reason="第二期新发现，待拍板：cmd 脱字符转义（d^el 即 del）需对拉丁词"
-                          "内做字符删除，误伤面大（a^b 等正常文本）", strict=True)
+@pytest.mark.xfail(reason="决策（第三期拍板）：不修。^ 在正常文本合法且常见（a^b、"
+                          "数学异或、正则、LaTeX），拉丁词内剔除字符误伤面大；"
+                          "属对抗性构造，非常见变体", strict=True)
 @pytest.mark.parametrize("text", ["d^el /f a.txt", "del ^/f a.txt"])
 def test_bypass_cmd_caret_escape(text):
+    """决策：不修。
+
+    cmd 的 ^ 是转义符，d^el 执行时等价 del，理论上可绕过关键词匹配。
+    但拦截它需要对拉丁词内做"剔除 ^ 再匹配"，而 ^ 在正常文本里合法
+    （异或表达式、正则、LaTeX、URL 转义残留），误伤面大。且本产品定位
+    是防"被诱导执行"——本机用户若刻意对抗，绕过路径远不止这一条
+    （见 docs/issues/issue-3-guard-多步走私.md 的同类边界讨论）。
+    本用例固化该已知残余。"""
     assert guard.evaluate("type_text", {"text": text})[0] == "high"
 
 
