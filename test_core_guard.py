@@ -345,6 +345,33 @@ def test_decision_bare_shutdown_blocked():
     assert guard.evaluate("type_text", {"text": "shutdown -s"})[0] == "high"
 
 
+# ==================== 第三期：format 目标形态校验（误伤修复） ====================
+
+@pytest.mark.parametrize("text", [
+    "date format: YYYY-MM-DD",   # 修复前：冒号归一化后命中 "format " → 误判 high
+    "the format is ISO-8601",    # 修复前：前缀子串命中 → 误判 high
+    "format: utf-8 编码",         # 修复前：冒号变体命中 → 误判 high
+    "xformat c:",                # 修复前：xformat 的子串命中（非命令）→ 误判 high
+    "reformat c:",               # 修复前：reformat 子串命中（非命令）→ 误判 high
+])
+def test_fix_format_target_form_no_false_positive(text):
+    """format 升级为目标形态校验：只有 format + 分隔符 + 盘符（可带旗标）才拦，
+    普通文本里的 format 字样不再误判（修复前均误判 high）。"""
+    assert guard.evaluate("type_text", {"text": text}) == ("none", "")
+
+
+@pytest.mark.parametrize("text", [
+    "format C:",              # 基准危险形态
+    "format /q d:",           # 盘符前带旗标
+    "format /fs:ntfs e:",     # 长旗标（含冒号）
+    "format c:\\users",       # 盘符后跟路径
+    "format d:",              # 换盘符
+])
+def test_format_target_form_still_blocked(text):
+    """危险语义不变：format + 分隔符 + 盘符仍判 high。"""
+    assert guard.evaluate("type_text", {"text": text})[0] == "high"
+
+
 # ==================== 第二期后仍存在的绕过变体：xfail 固化，待拍板 ====================
 
 @pytest.mark.xfail(reason="明确不修（第二期拍板）：字母/数字插入属对抗性构造，"
