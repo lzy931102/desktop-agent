@@ -4,6 +4,9 @@ agent_config.json
 *.key
 secrets.json
 
+# AI 工作准则（仅本地给 AI 看，不入库）
+工作准则.md
+
 # 归档目录
 archive/
 
