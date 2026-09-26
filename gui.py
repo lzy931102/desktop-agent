@@ -672,7 +672,7 @@ class AgentGUI:
                       text_color=TEXT, hover_color=CARD_2,
                       font=ctk.CTkFont(size=13), anchor="w",
                       command=self._show_settings).pack(fill="x")
-        ctk.CTkButton(bottom, text="🔌 插件", height=32, corner_radius=8,
+        ctk.CTkButton(bottom, text="🔌 插件", height=40, corner_radius=10,
                       fg_color="transparent", border_width=1, border_color=BORDER,
                       text_color=TEXT, hover_color=CARD_2,
                       font=ctk.CTkFont(size=13), anchor="w",
