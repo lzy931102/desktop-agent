@@ -12,6 +12,7 @@ import json
 import os
 import queue
 import re
+import sys
 import threading
 import time
 import customtkinter as ctk
@@ -537,6 +538,35 @@ class ChatStream:
             self.frame._parent_canvas.yview_moveto(1.0)
         except Exception:
             pass
+
+
+def attach_modal_dialog(dlg, owner):
+    """把对话框接成 Windows 原生模态：禁用父窗口，关窗时自动恢复。
+
+    为什么不用 Tk 的 grab_set：grab 在 Windows 上会拦掉对话框标题栏
+    「—」的最小化消息（□/× 不受影响），点最小化没有任何反应。
+    改用 Win32 模态惯例——父窗口禁输入、对话框可用，标题栏三个按钮
+    恢复原生行为；对话框最小化后能从任务栏缩略图预览里点回来。
+    """
+    if not sys.platform.startswith("win"):
+        return
+    try:
+        owner.attributes("-disabled", True)
+    except Exception:
+        return   # 平台不支持时退化为非模态，不影响对话框使用
+
+    def restore(event=None):
+        # <Destroy> 对每个子控件都会触发，只认对话框自身；
+        # 销毁过程中 event.widget 是新建的包装对象，必须按路径比较，
+        # 不能用 is/==
+        if event is not None and str(event.widget) != str(dlg):
+            return
+        try:
+            owner.attributes("-disabled", False)
+        except Exception:
+            pass   # 主窗口可能已随应用退出销毁
+
+    dlg.bind("<Destroy>", restore)
 
 
 class AgentGUI:
@@ -1226,7 +1256,7 @@ class AgentGUI:
         dlg = ctk.CTkToplevel(self.root, fg_color=BG)
         dlg.title("任务表")
         dlg.geometry("980x560")
-        dlg.grab_set()
+        attach_modal_dialog(dlg, self.root)
 
         body = ctk.CTkFrame(dlg, fg_color="transparent")
         body.pack(fill="both", expand=True, padx=18, pady=(14, 12))
@@ -1318,7 +1348,7 @@ class AgentGUI:
         dlg = ctk.CTkToplevel(self.root, fg_color=BG)
         dlg.title("任务历史")
         dlg.geometry("720x480")
-        dlg.grab_set()
+        attach_modal_dialog(dlg, self.root)
 
         head = ctk.CTkFrame(dlg, fg_color="transparent")
         head.pack(fill="x", padx=18, pady=(16, 6))
@@ -1348,7 +1378,7 @@ class AgentGUI:
         dlg = ctk.CTkToplevel(self.root, fg_color=BG)
         dlg.title("设置")
         dlg.geometry("620x900")
-        dlg.grab_set()
+        attach_modal_dialog(dlg, self.root)
 
         body = ctk.CTkFrame(dlg, fg_color="transparent")
         body.pack(fill="both", expand=True, padx=22, pady=14)
@@ -1546,7 +1576,7 @@ class AgentGUI:
         dlg = ctk.CTkToplevel(self.root, fg_color=BG)
         dlg.title("定时任务")
         dlg.geometry("720x560")
-        dlg.grab_set()
+        attach_modal_dialog(dlg, self.root)
 
         body = ctk.CTkFrame(dlg, fg_color="transparent")
         body.pack(fill="both", expand=True, padx=18, pady=(16, 10))
