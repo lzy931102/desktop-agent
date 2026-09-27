@@ -38,7 +38,7 @@ except ImportError:
     SkillManager = None  # 技能系统未安装，fallback 到无技能模式
 
 # 版本号：显示在窗口标题栏，方便用户与 GitHub Releases 对照（避免旧版新版分不清）
-APP_VERSION = "2.0.10"
+APP_VERSION = "2.0.11"
 
 # 高分屏清晰度修复：不声明 DPI 感知时，Windows 会把整个窗口位图拉伸放大，
 # 文字就像隔着毛玻璃（用户反馈"字非常模糊"）。声明后按真实像素渲染，
@@ -73,8 +73,8 @@ ACCENT = "#3B82F6"        # 主色（blue-500）
 ACCENT_HOVER = "#2563EB"
 BUBBLE_USER = "#1E40AF"   # 用户气泡（blue-800）
 TEXT = "#F3F4F6"          # 正文（gray-100）
-MUTED = "#D1D5DB"         # 次要文字（gray-300）
-FAINT = "#9CA3AF"         # 弱化文字（gray-400）
+MUTED = "#E5E7EB"         # 次要文字（gray-200，加深可读性：50岁用户反馈灰字看不清）
+FAINT = "#D1D5DB"         # 弱化文字（gray-300）
 OK = "#34D399"            # 成功（emerald-400）
 ERR = "#F87171"           # 失败（red-400）
 WARN = "#FBBF24"          # 警告（amber-400）
@@ -351,7 +351,7 @@ class ChatStream:
                          wraplength=460).pack(anchor="w", padx=16, pady=1)
         # 示例任务卡片：点一下直接填进输入框
         ctk.CTkLabel(box, text="试试这些任务（点击直接填入）：",
-                     font=ctk.CTkFont(size=11), text_color=FAINT,
+                     font=ctk.CTkFont(size=13), text_color=FAINT,
                      anchor="w").pack(anchor="w", padx=16, pady=(8, 2))
         grid = ctk.CTkFrame(box, fg_color="transparent")
         grid.pack(anchor="w", padx=12, pady=(2, 10))
@@ -423,7 +423,7 @@ class ChatStream:
     def _assistant(self, ev):
         row = ctk.CTkFrame(self.frame, fg_color="transparent")
         row.pack(fill="x", pady=(4, 2))
-        ctk.CTkLabel(row, text="🤖 助手", font=ctk.CTkFont(size=10),
+        ctk.CTkLabel(row, text="🤖 助手", font=ctk.CTkFont(size=12),
                      text_color=FAINT, anchor="w").pack(anchor="w", padx=(8, 0))
         bubble = ctk.CTkFrame(row, fg_color=CARD, corner_radius=14)
         bubble.pack(anchor="w", padx=(8, 90))
@@ -440,7 +440,7 @@ class ChatStream:
 
     def _turn(self, ev):
         ctk.CTkLabel(self.frame, text=f"—— 第 {ev['n']} 轮 ——",
-                     font=ctk.CTkFont(size=10), text_color=FAINT).pack(
+                     font=ctk.CTkFont(size=12), text_color=FAINT).pack(
             pady=(8, 2))
 
     def _tool(self, ev):
@@ -456,22 +456,22 @@ class ChatStream:
                      font=ctk.CTkFont(size=12, weight="bold"),
                      text_color=TOOLC, anchor="w").pack(side="left")
         chip_text, chip_color = TOOL_CHIP[ev["state"]]
-        chip = ctk.CTkLabel(head, text=chip_text, font=ctk.CTkFont(size=11),
+        chip = ctk.CTkLabel(head, text=chip_text, font=ctk.CTkFont(size=13),
                             text_color=chip_color)
         chip.pack(side="right")
 
         args_lbl = ctk.CTkLabel(
             card, text="参数：" + json.dumps(ev.get("args", {}), ensure_ascii=False)[:140],
-            font=ctk.CTkFont(family="Consolas", size=10), text_color=FAINT,
+            font=ctk.CTkFont(family="Consolas", size=12), text_color=FAINT,
             wraplength=440, justify="left", anchor="w")
         args_lbl.pack(fill="x", padx=12, pady=(2, 0))
 
-        result_lbl = ctk.CTkLabel(card, text="", font=ctk.CTkFont(size=11),
+        result_lbl = ctk.CTkLabel(card, text="", font=ctk.CTkFont(size=13),
                                   wraplength=440, justify="left", anchor="w")
         result_lbl.pack(fill="x", padx=12, pady=(2, 0))
 
         note_lbl = ctk.CTkLabel(card, text=ev.get("note", ""),
-                                font=ctk.CTkFont(size=11), text_color=WARN,
+                                font=ctk.CTkFont(size=13), text_color=WARN,
                                 anchor="w")
         note_lbl.pack(fill="x", padx=12, pady=(0, 2))
 
@@ -533,11 +533,11 @@ class ChatStream:
                      wraplength=440, justify="left", anchor="w").pack(
             anchor="w", padx=12)
         ctk.CTkLabel(card, text="原因：" + req["reason"],
-                     font=ctk.CTkFont(size=11), text_color=MUTED,
+                     font=ctk.CTkFont(size=13), text_color=MUTED,
                      wraplength=440, justify="left", anchor="w").pack(
             anchor="w", padx=12, pady=(2, 0))
 
-        state_lbl = ctk.CTkLabel(card, text="", font=ctk.CTkFont(size=11, weight="bold"))
+        state_lbl = ctk.CTkLabel(card, text="", font=ctk.CTkFont(size=13, weight="bold"))
         state_lbl.pack(anchor="w", padx=12, pady=(4, 0))
         btns = None
         if ev["state"] == "pending":
@@ -568,7 +568,7 @@ class ChatStream:
         ctk.CTkLabel(card, text="🚫 " + ev["text"], font=ctk.CTkFont(size=12),
                      text_color=WARN, wraplength=440, justify="left",
                      anchor="w").pack(anchor="w", padx=12, pady=(8, 0))
-        ctk.CTkLabel(card, text=MSG_BLOCKED_SUB, font=ctk.CTkFont(size=11),
+        ctk.CTkLabel(card, text=MSG_BLOCKED_SUB, font=ctk.CTkFont(size=13),
                      text_color=FAINT, wraplength=440, justify="left",
                      anchor="w").pack(anchor="w", padx=12, pady=(2, 8))
 
@@ -748,11 +748,11 @@ class AgentGUI:
         status_row = ctk.CTkFrame(main, fg_color="transparent")
         status_row.pack(fill="x", pady=(4, 0))
         self.privacy_banner = ctk.CTkLabel(status_row, text="",
-                                           font=ctk.CTkFont(size=11),
+                                           font=ctk.CTkFont(size=13),
                                            text_color=WARN)
         self.privacy_banner.pack(side="left")
         self.progress_label = ctk.CTkLabel(status_row, text="",
-                                           font=ctk.CTkFont(size=11),
+                                           font=ctk.CTkFont(size=13),
                                            text_color=FAINT, anchor="e")
         self.progress_label.pack(side="right", fill="x", expand=True)
 
@@ -1128,7 +1128,7 @@ class AgentGUI:
             ctk.CTkButton(tab, text="×", width=18, height=18, corner_radius=9,
                           fg_color="transparent", hover_color="#4B5563",
                           text_color=FAINT,
-                          font=ctk.CTkFont(size=11),
+                          font=ctk.CTkFont(size=13),
                           command=lambda s=s: self.close_session(s)).pack(
                 side="left", padx=(4, 8))
         ctk.CTkButton(self.tabbar, text="＋", width=30, height=28, corner_radius=8,
@@ -1163,7 +1163,7 @@ class AgentGUI:
                                            else "normal"),
                           command=lambda s=s: self._select(s)).pack(
                 side="left", fill="x", expand=True)
-            ctk.CTkLabel(item, text=sub, font=ctk.CTkFont(size=10),
+            ctk.CTkLabel(item, text=sub, font=ctk.CTkFont(size=12),
                          text_color=color, anchor="w").pack(
                 fill="x", padx=34, pady=(0, 6))
             self._bind_menu(item, s)
@@ -1314,11 +1314,11 @@ class AgentGUI:
         ctk.CTkLabel(head, text="📋 任务表", font=ctk.CTkFont(size=16, weight="bold"),
                      text_color=TEXT).pack(side="left")
         ctk.CTkLabel(head, text="本会话 + 历史记录，按时间倒序",
-                     font=ctk.CTkFont(size=11), text_color=FAINT).pack(
+                     font=ctk.CTkFont(size=13), text_color=FAINT).pack(
             side="left", padx=12)
         ctk.CTkButton(head, text="↻ 刷新", width=64, height=24, corner_radius=6,
                       fg_color=CARD_2, hover_color=BORDER, text_color=TEXT,
-                      font=ctk.CTkFont(size=11),
+                      font=ctk.CTkFont(size=13),
                       command=lambda: render(dlg, table)).pack(side="right")
 
         table = ctk.CTkScrollableFrame(body, fg_color=SIDEBAR, corner_radius=10)
@@ -1329,7 +1329,7 @@ class AgentGUI:
             f = ctk.CTkFrame(parent, fg_color="transparent", width=86, height=30)
             f.pack_propagate(False)
             ctk.CTkLabel(f, text=f"{icon} {STATUS_TEXT[status_key]}",
-                         font=ctk.CTkFont(size=11), text_color=color).pack(
+                         font=ctk.CTkFont(size=13), text_color=color).pack(
                 anchor="w", padx=6)
             return f
 
@@ -1342,7 +1342,7 @@ class AgentGUI:
             header.pack(fill="x", pady=(2, 4))
             for name, width in cols:
                 ctk.CTkLabel(header, text=name, width=width,
-                             font=ctk.CTkFont(size=11, weight="bold"),
+                             font=ctk.CTkFont(size=13, weight="bold"),
                              text_color=MUTED, anchor="w").pack(
                     side="left", padx=2)
 
@@ -1350,16 +1350,16 @@ class AgentGUI:
                 row = ctk.CTkFrame(table, fg_color=CARD, corner_radius=6)
                 row.pack(fill="x", pady=1)
                 chip(row, status_key).pack(side="left", padx=2, pady=4)
-                ctk.CTkLabel(row, text=task, width=260, font=ctk.CTkFont(size=11),
+                ctk.CTkLabel(row, text=task, width=260, font=ctk.CTkFont(size=13),
                              text_color=TEXT, anchor="w").pack(side="left", padx=2)
-                ctk.CTkLabel(row, text=turns, width=52, font=ctk.CTkFont(size=11),
+                ctk.CTkLabel(row, text=turns, width=52, font=ctk.CTkFont(size=13),
                              text_color=MUTED, anchor="w").pack(side="left", padx=2)
-                ctk.CTkLabel(row, text=elapsed, width=68, font=ctk.CTkFont(size=11),
+                ctk.CTkLabel(row, text=elapsed, width=68, font=ctk.CTkFont(size=13),
                              text_color=MUTED, anchor="w").pack(side="left", padx=2)
-                ctk.CTkLabel(row, text=when, width=110, font=ctk.CTkFont(size=11),
+                ctk.CTkLabel(row, text=when, width=110, font=ctk.CTkFont(size=13),
                              text_color=MUTED, anchor="w").pack(side="left", padx=2)
                 brief = result if len(result) <= 46 else result[:46] + "…"
-                ctk.CTkLabel(row, text=brief, width=320, font=ctk.CTkFont(size=11),
+                ctk.CTkLabel(row, text=brief, width=320, font=ctk.CTkFont(size=13),
                              text_color=FAINT, anchor="w").pack(side="left", padx=2)
 
             for s in reversed(list(self.sessions.values())):
@@ -1403,7 +1403,7 @@ class AgentGUI:
         ctk.CTkLabel(head, text="📜 最近任务", font=ctk.CTkFont(size=15, weight="bold"),
                      text_color=TEXT).pack(side="left")
         ctk.CTkLabel(head, text=f"记录存放：{self.history.path.parent}",
-                     font=ctk.CTkFont(size=10), text_color=FAINT).pack(side="right")
+                     font=ctk.CTkFont(size=12), text_color=FAINT).pack(side="right")
 
         box = ctk.CTkTextbox(dlg, font=ctk.CTkFont(family="Consolas", size=12),
                              fg_color=SIDEBAR, corner_radius=10, wrap="word",
@@ -1443,7 +1443,7 @@ class AgentGUI:
                      text_color=TEXT).pack(anchor="w")
         ctk.CTkLabel(body,
                      text="技能＝教 AI 做事的说明书　·　专家＝给 AI 换个角色　·　连接器＝给 AI 接外部工具",
-                     font=ctk.CTkFont(size=11), text_color=MUTED).pack(
+                     font=ctk.CTkFont(size=13), text_color=MUTED).pack(
             anchor="w", pady=(2, 0))
 
         tabs = ctk.CTkTabview(body, fg_color="transparent",
@@ -1499,7 +1499,7 @@ class AgentGUI:
             status_text = STATUS_TEXT.get(info.status, "未知")
             status_color = STATUS_COLOR.get(info.status, FAINT)
             ctk.CTkLabel(row, text=f"{status_icon} {status_text}",
-                         font=ctk.CTkFont(size=11),
+                         font=ctk.CTkFont(size=13),
                          text_color=status_color).pack(side="left", padx=(0, 8))
 
             # 包信息：名字 + 版本 + 一句话描述 + 什么时候用
@@ -1518,11 +1518,11 @@ class AgentGUI:
                 meta.append("什么时候用：" + "、".join(info.triggers[:4]))
             if meta:
                 ctk.CTkLabel(info_frame, text=" · ".join(meta),
-                             font=ctk.CTkFont(size=11), text_color=MUTED).pack(
+                             font=ctk.CTkFont(size=13), text_color=MUTED).pack(
                     anchor="w", pady=(2, 0))
             if info.error:
                 ctk.CTkLabel(info_frame, text=f"错误: {info.error[:70]}",
-                             font=ctk.CTkFont(size=10), text_color=ERR).pack(
+                             font=ctk.CTkFont(size=12), text_color=ERR).pack(
                     anchor="w", pady=(4, 0))
 
             # 删除（纯文本包，删了随时能重装；二次确认防手滑）
@@ -1542,7 +1542,7 @@ class AgentGUI:
             enabled_var = ctk.BooleanVar(value=info.enabled)
             switch = ctk.CTkSwitch(row, text="", variable=enabled_var,
                                    progress_color=ACCENT, text_color=TEXT,
-                                   font=ctk.CTkFont(size=11),
+                                   font=ctk.CTkFont(size=13),
                                    command=lambda i=info, e=enabled_var:
                                    manager.set_enabled(i.folder, e.get()))
             switch.pack(side="right", padx=(8, 0))
@@ -1608,7 +1608,7 @@ class AgentGUI:
                              font=ctk.CTkFont(size=13, weight="bold"),
                              text_color=TEXT).pack(anchor="w", padx=16, pady=(14, 4))
                 ctk.CTkLabel(u, text="只装可信来源的技能包；AI 在任务里也能自己装",
-                             font=ctk.CTkFont(size=10), text_color=MUTED).pack(
+                             font=ctk.CTkFont(size=12), text_color=MUTED).pack(
                     anchor="w", padx=16)
                 entry = ctk.CTkEntry(u, placeholder_text="https://…/技能包.zip",
                                      fg_color=INPUT_BG, border_color=BORDER)
@@ -1679,7 +1679,7 @@ class AgentGUI:
                 status_text = STATUS_TEXT.get(info.status, "未知")
                 status_color = STATUS_COLOR.get(info.status, FAINT)
                 ctk.CTkLabel(row, text=f"{status_icon} {status_text}",
-                             font=ctk.CTkFont(size=11),
+                             font=ctk.CTkFont(size=13),
                              text_color=status_color).pack(side="left", padx=(0, 8))
 
                 info_frame = ctk.CTkFrame(row, fg_color="transparent")
@@ -1695,17 +1695,17 @@ class AgentGUI:
                                 if len(info.description) > 46 else info.description)
                 if meta:
                     ctk.CTkLabel(info_frame, text=" · ".join(meta),
-                                 font=ctk.CTkFont(size=11), text_color=MUTED).pack(
+                                 font=ctk.CTkFont(size=13), text_color=MUTED).pack(
                         anchor="w", pady=(2, 0))
                 if info.error:
                     ctk.CTkLabel(info_frame, text=f"错误: {info.error[:70]}",
-                                 font=ctk.CTkFont(size=10), text_color=ERR).pack(
+                                 font=ctk.CTkFont(size=12), text_color=ERR).pack(
                         anchor="w", pady=(4, 0))
 
                 enabled_var = ctk.BooleanVar(value=info.enabled)
                 switch = ctk.CTkSwitch(row, text="", variable=enabled_var,
                                        progress_color=ACCENT, text_color=TEXT,
-                                       font=ctk.CTkFont(size=11),
+                                       font=ctk.CTkFont(size=13),
                                        command=lambda i=info, e=enabled_var:
                                        plugin_manager.set_enabled(i.stem, e.get()))
                 switch.pack(side="right", padx=(8, 0))
@@ -1786,7 +1786,7 @@ class AgentGUI:
                                        button_hover_color=ACCENT_HOVER)
         model_menu.pack(anchor="w")
         local_hint = ctk.CTkLabel(body, text="正在读取模型列表…",
-                                  font=ctk.CTkFont(size=11), text_color=FAINT)
+                                  font=ctk.CTkFont(size=13), text_color=FAINT)
         local_hint.pack(anchor="w", pady=(4, 0))
 
         def refresh_models():
@@ -1821,7 +1821,7 @@ class AgentGUI:
 
         prow = ctk.CTkFrame(cloud_box, fg_color="transparent")
         prow.pack(fill="x", padx=14)
-        ctk.CTkLabel(prow, text="服务商", font=ctk.CTkFont(size=11),
+        ctk.CTkLabel(prow, text="服务商", font=ctk.CTkFont(size=13),
                      text_color=MUTED).pack(side="left")
         provider_menu = ctk.CTkOptionMenu(prow, values=preset_names,
                                           variable=provider_var, width=130,
@@ -1836,7 +1836,7 @@ class AgentGUI:
         provider_menu.configure(command=on_provider_change)
 
         ctk.CTkLabel(cloud_box, text="API Key（留空则使用环境变量）",
-                     font=ctk.CTkFont(size=11), text_color=MUTED).pack(
+                     font=ctk.CTkFont(size=13), text_color=MUTED).pack(
             anchor="w", padx=14, pady=(8, 2))
         api_entry = ctk.CTkEntry(cloud_box, textvariable=api_var, show="*",
                                  width=340, fg_color=INPUT_BG, border_color=BORDER)
@@ -1844,12 +1844,12 @@ class AgentGUI:
 
         crow = ctk.CTkFrame(cloud_box, fg_color="transparent")
         crow.pack(fill="x", padx=14, pady=(8, 4))
-        ctk.CTkLabel(crow, text="模型名", font=ctk.CTkFont(size=11),
+        ctk.CTkLabel(crow, text="模型名", font=ctk.CTkFont(size=13),
                      text_color=MUTED).pack(side="left")
         ctk.CTkEntry(crow, textvariable=cmodel_var, width=170,
                      fg_color=INPUT_BG, border_color=BORDER).pack(side="left",
                                                                   padx=(8, 12))
-        ctk.CTkLabel(crow, text="接口地址", font=ctk.CTkFont(size=11),
+        ctk.CTkLabel(crow, text="接口地址", font=ctk.CTkFont(size=13),
                      text_color=MUTED).pack(side="left")
         ctk.CTkEntry(crow, textvariable=cbase_var, width=250,
                      fg_color=INPUT_BG, border_color=BORDER).pack(side="left",
@@ -1857,7 +1857,7 @@ class AgentGUI:
 
         test_row = ctk.CTkFrame(cloud_box, fg_color="transparent")
         test_row.pack(fill="x", padx=14, pady=(6, 12))
-        test_result = ctk.CTkLabel(test_row, text="", font=ctk.CTkFont(size=11),
+        test_result = ctk.CTkLabel(test_row, text="", font=ctk.CTkFont(size=13),
                                    text_color=MUTED, anchor="w")
         preset = CLOUD_PRESETS.get(provider_var.get(), {})
         if preset and os.environ.get(preset["env"]):
@@ -1901,7 +1901,7 @@ class AgentGUI:
                      text_color=TEXT).pack(anchor="w", padx=14, pady=(10, 2))
         ctk.CTkLabel(feishu_box,
                      text="粘贴群机器人的 Webhook 地址后，Agent 可直接给飞书群发消息",
-                     font=ctk.CTkFont(size=11), text_color=MUTED).pack(
+                     font=ctk.CTkFont(size=13), text_color=MUTED).pack(
             anchor="w", padx=14)
         ctk.CTkEntry(feishu_box, textvariable=feishu_var, width=560,
                      placeholder_text="https://open.feishu.cn/open-apis/bot/v2/hook/…",
@@ -2049,7 +2049,7 @@ class AgentGUI:
                 if t.get("last_run") else "未执行过"
             info = (f"{mark} {Scheduler.describe(t)} ｜ {t['task'][:26]}\n"
                     f"    上次：{last} {t.get('last_status', '')}")
-            ctk.CTkLabel(row, text=info, font=ctk.CTkFont(size=11),
+            ctk.CTkLabel(row, text=info, font=ctk.CTkFont(size=13),
                          text_color=TEXT if t.get("enabled") else MUTED,
                          justify="left", anchor="w").pack(side="left", padx=10,
                                                           pady=6)
