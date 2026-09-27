@@ -37,6 +37,9 @@ try:
 except ImportError:
     SkillManager = None  # 技能系统未安装，fallback 到无技能模式
 
+# 版本号：显示在窗口标题栏，方便用户与 GitHub Releases 对照（避免旧版新版分不清）
+APP_VERSION = "2.0.9"
+
 try:
     from PIL import Image
 except ImportError:
@@ -596,7 +599,7 @@ def attach_modal_dialog(dlg, owner):
 class AgentGUI:
     def __init__(self):
         self.root = ctk.CTk()
-        self.root.title("Desktop Agent - 智能桌面助手")
+        self.root.title(f"Desktop Agent v{APP_VERSION} - 智能桌面助手")
         self.root.geometry("1180x780")
         self.root.minsize(1020, 680)
         self.root.configure(fg_color=BG)
@@ -629,7 +632,7 @@ class AgentGUI:
     def _build_header(self):
         bar = ctk.CTkFrame(self.root, fg_color="transparent")
         bar.pack(fill="x", padx=18, pady=(14, 2))
-        ctk.CTkLabel(bar, text="🤖 Desktop Agent 智能桌面助手",
+        ctk.CTkLabel(bar, text=f"🤖 Desktop Agent 智能桌面助手 v{APP_VERSION}",
                      font=ctk.CTkFont(size=17, weight="bold"),
                      text_color=TEXT).pack(side="left")
         self.conn_label = ctk.CTkLabel(bar, text="○ 正在连接本地 Ollama…",
