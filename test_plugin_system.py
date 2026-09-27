@@ -360,3 +360,26 @@ def test_underscore_and_non_py_files_ignored(tmp_path):
 def test_build_tools_rejects_non_dict_entry():
     with pytest.raises(PluginContractError):
         build_tools(["不是字典"], "插件", {})
+
+
+# ---------------- agent_loop 接入（末尾：允许 import 主程序） ----------------
+
+def test_agent_loop_plugin_integration(tmp_path):
+    """回归保护：PluginTool 是 dataclass 对象，不是字典。
+    曾因 agent_loop 写成 t["prompt_hint"]，目录里一有可用插件，
+    DesktopAgent 一实例化就 TypeError('PluginTool' object is not subscriptable)
+    → 任何任务都失败。修复后：prompt 注入 hint 且能正常建 agent。"""
+    import agent_loop
+
+    write_plugin(tmp_path, "good", GOOD_PLUGIN)
+    m = make_manager(tmp_path)
+    agent = agent_loop.DesktopAgent(plugins=m)
+
+    sys_text = agent.messages[0]["content"]
+    assert "已启用的扩展插件工具" in sys_text
+    assert "test_plugin_tool_a" in sys_text and "测试工具A" in sys_text
+    assert len(agent._plugin_tools) == 2
+
+    # 不传 plugins：与原来一致，无插件段落
+    bare = agent_loop.DesktopAgent()
+    assert "已启用的扩展插件工具" not in bare.messages[0]["content"]
