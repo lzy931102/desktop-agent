@@ -855,7 +855,7 @@ class DesktopAgent:
         if PluginManager is not None and plugins is not None:
             self._plugin_tools = plugins.enabled_tools()
             self._plugin_prompt = "\n\n已启用的扩展插件工具：\n" + "\n".join(
-                t["prompt_hint"] for t in self._plugin_tools)
+                t.prompt_hint for t in self._plugin_tools)
 
         # 技能/专家包注入（仅当 SkillManager 可用且未显式传 None 时）
         self._skill_manager = None
