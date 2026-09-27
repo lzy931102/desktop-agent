@@ -23,7 +23,10 @@
 - **UIA 元素定位** - Windows UI Automation
 - **安全拦截** - 分级权限 + 白名单
 - **异常恢复** - 自动错误处理
-- **插件系统** - 独立插件模块，支持用户自定义工具（见 [插件开发指南](docs/插件开发指南.md)）
+- **插件系统** - 三类外部能力统一管理（见 [插件开发指南](docs/插件开发指南.md)）：
+  - 连接器：.py 工具插件，给 AI 接外部工具
+  - 技能/专家：SKILL.md 纯文本包，教 AI 做事 / 换角色（见 [技能包指南](docs/技能包指南.md)）
+  - AI 可用 `install_skill` 工具自己安装技能包（网址/文件夹/zip/md）
 
 ## 架构
 
@@ -113,7 +116,7 @@ python gui.py
 
 ### 界面说明（多任务并行版）
 
-- **左侧栏**：＋ 新建任务、任务列表（状态/轮次实时刷新，右键可重命名/关闭）、任务表、设置
+- **左侧栏**：＋ 新建任务、任务列表（状态/轮次实时刷新，右键可重命名/关闭）、任务表、设置、插件（技能/专家/连接器）
 - **Tab 栏**：每个任务一个 Tab，最多可并行执行（默认 3 个，设置里可调 1-5），超出自动排队
 - **对话流**：用户/助手气泡、工具调用卡片（参数 → 执行中 → 成功/失败/拦截）、
   高危操作内嵌确认卡、截屏缩略图（点击放大）
@@ -201,10 +204,12 @@ desktop-agent/
 ├── agent_loop.py             # agent 主干（LLM 循环、工具调度）
 ├── agent_vision.py           # 工具包：视觉/窗口/UIA/剪贴板
 ├── core/                     # 基础设施：audit/guard/approval/history/scheduler/settings
-├── plugin_system/            # 插件系统独立模块（加载、启停、工具合并）
+├── plugin_system/            # 连接器：.py 工具插件（加载、启停、工具合并）
+├── skill_system/             # 技能/专家包：SKILL.md 注入 + install_skill 工具
 ├── examples/                 # 示例插件（示例插件-天气查询.py）
 ├── test_*.py                 # 测试文件
 ├── test_plugin_system.py     # 插件系统独立测试（不 import agent_loop/gui）
+├── test_skill_system.py      # 技能包系统独立测试（含 agent_loop 接入测试）
 ├── test_plugin_boundary.py   # 插件与内置工具清单一致性测试
 ├── requirements.txt          # 依赖
 ├── LICENSE                   # MIT License
@@ -221,8 +226,9 @@ desktop-agent/
 
 ## 插件开发
 
-- [插件模块化方案（建议稿）](docs/插件模块化方案.md)：整体设计与安全边界
-- [插件开发指南](docs/插件开发指南.md)：骨架、字段说明、常见问题
+- [插件模块化方案（建议稿）](docs/插件模块化方案.md)：连接器的整体设计与安全边界
+- [插件开发指南](docs/插件开发指南.md)：连接器（.py 工具插件）骨架、字段说明、常见问题
+- [技能包指南](docs/技能包指南.md)：技能/专家包（SKILL.md）的写法、安装与安全说明
 - [示例插件源码](plugin_system/sample.py)：单一事实来源，生成插件时用
 
 ## 许可证

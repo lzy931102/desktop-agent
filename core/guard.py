@@ -68,6 +68,13 @@ RULES = [
 ]
 
 
+# 工具级基础风险（与参数内容无关）：不在表内的默认 none。
+# install_skill 要访问网络并往技能目录写文件 → medium（审计 + 界面提示，不拦截）。
+TOOL_BASE_RISK = {
+    "install_skill": ("medium", "安装技能包：访问网络并写入技能目录"),
+}
+
+
 # 可安全重试的工具（幂等或只读操作）；不在清单内的失败交回模型决策
 # analyze_screen 不重试：单次调用可达 1-2 分钟，重试只会加倍等待，失败应让模型换快速通道
 RETRYABLE_TOOLS = {
@@ -225,4 +232,4 @@ def evaluate(tool_name: str, args: dict) -> tuple:
         for kw in rule.get("equals", []):
             if value == _normalize(kw):
                 return rule["risk"], rule["reason"]
-    return "none", ""
+    return TOOL_BASE_RISK.get(tool_name, ("none", ""))

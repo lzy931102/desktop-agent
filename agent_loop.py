@@ -43,6 +43,11 @@ try:
     from plugin_system import PluginManager
 except ImportError:
     PluginManager = None  # 插件系统未安装，fallback 到纯内置工具
+
+try:
+    from skill_system import SkillManager
+except ImportError:
+    SkillManager = None  # 技能系统未安装，fallback 到无技能模式
     TOOLS_SCHEMA = TOOLS_SCHEMA  # 避免未定义引用
 
 
@@ -750,6 +755,26 @@ def final_reply_failed(text) -> bool:
     return any(marker in str(text) for marker in FAILURE_MARKERS)
 
 
+# 技能系统注册的内置工具（SkillManager 可用时才并入工具清单）：
+# 让 AI 在任务中自己安装技能包——用户给来源就装，不用退出任务
+INSTALL_SKILL_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "install_skill",
+        "description": ("安装技能包或专家角色包。source 支持 http(s) 网址"
+                        "（指向 .zip 或 .md 文件），或本地路径（文件夹 / .zip / .md）"),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "source": {"type": "string",
+                           "description": "技能包来源：网址或本地路径"},
+            },
+            "required": ["source"],
+        },
+    },
+}
+
+
 SYSTEM_PROMPT = """你是一个电脑操作助手，通过工具帮用户完成桌面任务。你能看屏幕、管窗口、点控件、用剪贴板。
 
 可用工具：
@@ -796,17 +821,16 @@ SYSTEM_PROMPT = """你是一个电脑操作助手，通过工具帮用户完成�
 class DesktopAgent:
     def __init__(self, llm: LLMClient = None, workdir: Path = None,
                  auditor: AuditLogger = None, history: TaskHistory = None,
-                 approval=None, plugins=None):
+                 approval=None, plugins=None, skills=None):
         """auditor/history/approval 为企业化基础设施（core 包），依赖注入：
         不传则无审计无历史，高危操作按 AutoDenyPolicy 拒绝。
 
         plugins: PluginManager 实例（可选）。若提供，插件工具会被合并到工具清单；
         若不提供或 PluginManager 未安装，只使用内置工具（TOOL_FUNCTIONS）。
+        skills: SkillManager 实例（可选）。若提供，技能/专家包的指南注入
+        system prompt，并注册 install_skill 工具；不提供则无技能能力。
         """
         self.workdir = workdir or Path.cwd()
-        self.messages = [
-            {"role": "system", "content": SYSTEM_PROMPT + self._plugin_prompt}
-        ]
         self.max_turns = 10
         self._image_located = False   # locate_on_screen 是否成功（供旧逻辑兼容）
         self._last_locate_failed = False  # 上一次 locate_on_screen 失败 → 拦截下一次盲点击
@@ -827,12 +851,24 @@ class DesktopAgent:
 
         # 插件工具合并（仅当 PluginManager 可用且未显式传 None 时）
         self._plugin_tools = ()
+        self._plugin_prompt = ""
         if PluginManager is not None and plugins is not None:
             self._plugin_tools = plugins.enabled_tools()
             self._plugin_prompt = "\n\n已启用的扩展插件工具：\n" + "\n".join(
                 t["prompt_hint"] for t in self._plugin_tools)
-        else:
-            self._plugin_prompt = ""
+
+        # 技能/专家包注入（仅当 SkillManager 可用且未显式传 None 时）
+        self._skill_manager = None
+        self._skill_prompt = ""
+        if SkillManager is not None and skills is not None:
+            self._skill_manager = skills
+            self._skill_prompt = skills.prompt_sections()
+
+        # system 消息在插件/技能注入材料齐备后再构建（默认 → 插件 → 技能）
+        self.messages = [
+            {"role": "system",
+             "content": SYSTEM_PROMPT + self._plugin_prompt + self._skill_prompt}
+        ]
 
     def stop(self):
         """请求停止执行，在下一轮开始前生效"""
@@ -840,6 +876,15 @@ class DesktopAgent:
 
     def _execute_tool(self, name: str, args: dict, risk: str):
         """执行单个工具：重试（指数退避）+ 动作后校验，全部事件入审计"""
+        # 技能包安装（技能系统可用时注册；先于插件，避免被同名插件遮蔽）
+        if name == "install_skill":
+            if self._skill_manager is None:
+                return "错误: 技能系统不可用"
+            try:
+                return self._skill_manager.run_install_tool(args)
+            except Exception as e:
+                return f"错误: 安装技能包失败 - {type(e).__name__}: {str(e)[:100]}"
+
         # 优先检查插件工具
         if self._plugin_tools:
             plugin_tool = next((t for t in self._plugin_tools if t.name == name), None)
@@ -962,11 +1007,12 @@ class DesktopAgent:
                 )
                 self.llm = LLMClient(config)
 
-            # 合并内置工具 + 插件工具（仅当有插件时）
+            # 合并内置工具 + 插件工具 + 技能安装工具
+            tools_schema = TOOLS_SCHEMA
             if self._plugin_tools:
-                tools_schema = TOOLS_SCHEMA + [t.schema() for t in self._plugin_tools]
-            else:
-                tools_schema = TOOLS_SCHEMA
+                tools_schema = tools_schema + [t.schema() for t in self._plugin_tools]
+            if self._skill_manager is not None:
+                tools_schema = tools_schema + [INSTALL_SKILL_SCHEMA]
 
             # LLM 调用
             llm_start = time.time()
