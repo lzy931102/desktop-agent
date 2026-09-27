@@ -15,3 +15,10 @@ def plugins_dir() -> Path:
     d = data_dir() / "plugins"
     d.mkdir(parents=True, exist_ok=True)
     return d
+
+
+def skills_dir() -> Path:
+    """技能包目录：技能/专家包（文件夹 + SKILL.md）放进来即安装（不随 exe 打包）"""
+    d = data_dir() / "skills"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
