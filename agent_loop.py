@@ -72,12 +72,29 @@ class LLMConfig:
     base_url: str = ""
     model: str = ""
     temperature: float = 0.1
+    # Ollama 上下文窗口：系统提示词 + 工具定义较长，默认 4096 可能把工具清单截断
+    num_ctx: int = 8192
+    # 流式读取时「两个数据块之间的最大等待秒数」。
+    # 注意这与「整个请求超时」不是一个概念：prompt 处理阶段会长时间静默
+    # （实测 3000 token 约需 90 秒），所以必须给足余量，否则长提示词必然误报超时。
+    read_timeout: int = 300
 
 
 class LLMClient:
     def __init__(self, config: LLMConfig):
         self.config = config
         self.client = self._create_client()
+        # 可选进度回调：流式推理时把「首字耗时/已生成字数」报给界面，
+        # 避免 CPU 推理期间界面长时间无反馈被误认为卡死
+        self.on_progress = None
+
+    def _note(self, msg: str):
+        """把推理进度报给界面（未设置回调时静默）"""
+        if self.on_progress:
+            try:
+                self.on_progress(msg)
+            except Exception:
+                pass
 
     def _create_client(self):
         if self.config.provider == LLMProvider.OLLAMA:
@@ -240,20 +257,63 @@ class LLMClient:
         payload = {
             "model": self.config.model,
             "messages": self._normalize_messages_for_ollama(messages),
-            "stream": False,
-            "options": {"temperature": self.config.temperature}
+            # 必须流式：CPU 推理下非流式要等整段生成完才返回，
+            # 长提示词（系统提示词+工具定义）必然触发读超时，任务连第一轮都跑不完
+            "stream": True,
+            # 模型常驻 30 分钟：本机实测冷加载约 15 秒，多轮任务间不卸载可省掉每次重载
+            "keep_alive": "30m",
+            "options": {
+                "temperature": self.config.temperature,
+                # 显式放大上下文，避免默认窗口把工具清单截断
+                "num_ctx": self.config.num_ctx,
+            },
         }
         if tools:
             payload["tools"] = [{"type": "function", "function": t["function"]} for t in tools]
         # 本地服务：trust_env=False 跳过环境变量与系统代理，避免 FastGithub 等代理残留劫持 localhost 请求
         session = requests.Session()
         session.trust_env = False
-        r = session.post(url, json=payload, timeout=120)
-        r.raise_for_status()
-        data = r.json()
-        msg = data.get("message", {})
-        content = msg.get("content", "")
-        tool_calls = msg.get("tool_calls") or []
+        # 连接 15 秒；流式下 read timeout 是「两块数据之间的最大间隔」，
+        # prompt 处理阶段会长时间静默（实测 3000 token 约 90 秒），必须给足余量
+        timeout = (15, self.config.read_timeout)
+
+        parts: List[str] = []
+        tool_calls: List[Dict] = []
+        usage = {"prompt": 0, "eval": 0}
+        started = time.time()
+        first_chunk_at = None
+        last_note_at = 0.0
+        self._note("正在请求本地模型（CPU 推理，长提示词需 1~3 分钟，请勿关闭窗口）…")
+
+        with session.post(url, json=payload, stream=True, timeout=timeout) as r:
+            r.raise_for_status()
+            for raw in r.iter_lines(decode_unicode=False):
+                if not raw:
+                    continue
+                try:
+                    data = json.loads(raw.decode("utf-8", "replace"))
+                except ValueError:
+                    continue
+                msg = data.get("message") or {}
+                piece = msg.get("content") or ""
+                if piece:
+                    if first_chunk_at is None:
+                        first_chunk_at = time.time()
+                        self._note(f"首字用时 {first_chunk_at - started:.1f} 秒，开始生成…")
+                    parts.append(piece)
+                if msg.get("tool_calls"):
+                    tool_calls.extend(msg["tool_calls"])
+                if data.get("done"):
+                    # token 用量透传（供界面统计；Ollama /api/chat 原生字段）
+                    usage = {"prompt": data.get("prompt_eval_count") or 0,
+                             "eval": data.get("eval_count") or 0}
+                # 每 5 秒报一次进度，让界面能看出「在动」而不是卡死
+                now = time.time()
+                if now - last_note_at >= 5:
+                    last_note_at = now
+                    self._note(f"生成中… 已 {sum(len(p) for p in parts)} 字 / {now - started:.0f} 秒")
+
+        content = "".join(parts)
         # 兼容层：GGUF 导入的模型常把工具调用输出为文本（```json {...}``` 或
         # <tool_call>{...}</tool_call>），Ollama 解析不出结构化 tool_calls 时在客户端提取
         if not tool_calls and content:
@@ -265,9 +325,7 @@ class LLMClient:
             "role": "assistant",
             "content": content,
             "tool_calls": tool_calls,
-            # token 用量透传（供界面统计；Ollama /api/chat 原生字段）
-            "_usage": {"prompt": data.get("prompt_eval_count") or 0,
-                       "eval": data.get("eval_count") or 0},
+            "_usage": usage,
         }
 
 
@@ -280,6 +338,16 @@ class FallbackLLMClient:
         self.cloud = cloud
         self.on_fallback = on_fallback  # 回调：on_fallback(error) 切换时通知界面
         self.config = local.config
+
+    @property
+    def on_progress(self):
+        """进度回调透传给本地/云端两个客户端，界面侧只需设置一次"""
+        return self.local.on_progress
+
+    @on_progress.setter
+    def on_progress(self, cb):
+        self.local.on_progress = cb
+        self.cloud.on_progress = cb
 
     def chat(self, messages: List[Dict], tools: List[Dict] = None) -> Dict:
         try:
@@ -1014,12 +1082,18 @@ class DesktopAgent:
             if self._skill_manager is not None:
                 tools_schema = tools_schema + [INSTALL_SKILL_SCHEMA]
 
-            # LLM 调用
+            # LLM 调用：把流式推理进度接到日志框。
+            # CPU 推理时单轮可能耗时数分钟，没有进度输出会被误认为程序卡死。
+            try:
+                self.llm.on_progress = self._log
+            except Exception:
+                pass
             llm_start = time.time()
             resp = self.llm.chat(self.messages, tools_schema)
             _u = resp.get("_usage") or {}
             self.total_tokens += (_u.get("prompt") or 0) + (_u.get("eval") or 0)
-            self._log(f"思考用时 {time.time() - llm_start:.1f} 秒")
+            self._log(f"思考用时 {time.time() - llm_start:.1f} 秒"
+                      f"（提示 {_u.get('prompt') or 0} token / 生成 {_u.get('eval') or 0} token）")
 
             self.messages.append(resp)
 
