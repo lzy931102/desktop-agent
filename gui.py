@@ -38,7 +38,7 @@ except ImportError:
     SkillManager = None  # 技能系统未安装，fallback 到无技能模式
 
 # 版本号：显示在窗口标题栏，方便用户与 GitHub Releases 对照（避免旧版新版分不清）
-APP_VERSION = "2.0.12"
+APP_VERSION = "2.0.13"
 
 # 高分屏清晰度修复：不声明 DPI 感知时，Windows 会把整个窗口位图拉伸放大，
 # 文字就像隔着毛玻璃（用户反馈"字非常模糊"）。声明后按真实像素渲染，
