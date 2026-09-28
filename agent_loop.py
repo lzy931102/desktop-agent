@@ -48,7 +48,6 @@ try:
     from skill_system import SkillManager
 except ImportError:
     SkillManager = None  # 技能系统未安装，fallback 到无技能模式
-    TOOLS_SCHEMA = TOOLS_SCHEMA  # 避免未定义引用
 
 
 def _send_feishu_impl(text: str) -> str:
