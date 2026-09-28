@@ -38,7 +38,7 @@ except ImportError:
     SkillManager = None  # 技能系统未安装，fallback 到无技能模式
 
 # 版本号：显示在窗口标题栏，方便用户与 GitHub Releases 对照（避免旧版新版分不清）
-APP_VERSION = "2.0.11"
+APP_VERSION = "2.0.12"
 
 # 高分屏清晰度修复：不声明 DPI 感知时，Windows 会把整个窗口位图拉伸放大，
 # 文字就像隔着毛玻璃（用户反馈"字非常模糊"）。声明后按真实像素渲染，
@@ -248,6 +248,8 @@ class TaskSession:
         self.tokens = 0
         self.approval = GuiApprovalBridge()  # 每个任务独立审批桥，互不串扰
         self.stop_flag = False
+        self.log_lines = []            # 实时日志（滚动区展示，可选中复制）
+        self.current_action = ""       # 当前步骤描述（状态条展示）
 
     # ---- 事件（主线程调用） ----
     def add(self, kind, **kw):
@@ -429,7 +431,21 @@ class ChatStream:
         bubble.pack(anchor="w", padx=(8, 90))
         ctk.CTkLabel(bubble, text=ev["text"], font=ctk.CTkFont(size=13),
                      text_color=TEXT, wraplength=440, justify="left").pack(
-            padx=14, pady=8)
+            padx=14, pady=(8, 4))
+        copy_btn = ctk.CTkButton(bubble, text="📋 复制", width=70, height=22,
+                                 corner_radius=6, fg_color=CARD_2,
+                                 hover_color=BORDER, text_color=MUTED,
+                                 font=ctk.CTkFont(size=11),
+                                 command=lambda: self._copy_reply(
+                                     ev["text"], copy_btn))
+        copy_btn.pack(anchor="e", padx=10, pady=(0, 8))
+
+    def _copy_reply(self, text, btn):
+        """一键复制助手回复；按钮短暂变成“已复制”给个反馈。"""
+        self.app._copy_text(text)
+        btn.configure(text="✓ 已复制", text_color=OK)
+        self.app.root.after(1500,
+                            lambda: btn.configure(text="📋 复制", text_color=MUTED))
 
     def _system(self, ev):
         color = {"info": MUTED, "ok": OK, "err": ERR,
@@ -722,6 +738,45 @@ class AgentGUI:
         self.chat = ChatStream(main, self)
         self.chat.frame.pack(fill="both", expand=True)
 
+        # ---- 状态条：当前步骤 + 脉动进度条（运行时一直有反馈，不再干等） ----
+        statusbar = ctk.CTkFrame(main, fg_color=CARD, corner_radius=8)
+        statusbar.pack(fill="x", pady=(4, 0))
+        self.status_line = ctk.CTkLabel(statusbar, text="",
+                                        font=ctk.CTkFont(size=12),
+                                        text_color=MUTED, anchor="w")
+        self.status_line.pack(side="left", padx=(12, 6), pady=5)
+        self.status_bar = ctk.CTkProgressBar(statusbar, height=4,
+                                             progress_color=ACCENT,
+                                             fg_color=CARD_2)
+        self.status_bar.pack(side="right", padx=12, pady=8, fill="x", expand=True)
+        self.status_bar.set(0)
+        self._bar_t = 0.0
+
+        # ---- 实时日志区：可选中复制、自动滚到最底 ----
+        logwrap = ctk.CTkFrame(main, fg_color="transparent")
+        logwrap.pack(fill="x", pady=(4, 0))
+        loghead = ctk.CTkFrame(logwrap, fg_color="transparent")
+        loghead.pack(fill="x")
+        ctk.CTkLabel(loghead, text="📜 运行日志（文字可选中复制）",
+                     font=ctk.CTkFont(size=12), text_color=FAINT,
+                     anchor="w").pack(side="left")
+        ctk.CTkButton(loghead, text="🧹 清空", width=56, height=20,
+                      corner_radius=6, fg_color=CARD, hover_color=CARD_2,
+                      text_color=FAINT, font=ctk.CTkFont(size=11),
+                      command=self._clear_log).pack(side="right")
+        self.logbox = ctk.CTkTextbox(
+            logwrap, height=132, font=ctk.CTkFont(family="Consolas", size=12),
+            fg_color=SIDEBAR, corner_radius=8, wrap="word", text_color=MUTED)
+        self.logbox.pack(fill="x", pady=(2, 0))
+        self.logbox.configure(state="disabled")
+        self._log_menu = tk.Menu(self.logbox, tearoff=0,
+                                 font=("Microsoft YaHei UI", 10))
+        self._log_menu.add_command(label="复制选中文字",
+                                   command=self._copy_log_selection)
+        self._log_menu.add_command(label="全选",
+                                   command=lambda: self.logbox.tag_add("sel", "1.0", "end"))
+        self.logbox.bind("<Button-3>", self._show_log_menu)
+
         # ---- 输入区 ----
         self._add_chip_rows(main, EXAMPLES)
 
@@ -789,6 +844,7 @@ class AgentGUI:
         self._restore_draft(s)
         self._sync_input_state()
         self.chat.render_all(s)
+        self._replay_log(s)
         self._tabs_dirty = self._sidebar_dirty = True
 
     def _save_draft(self, s):
@@ -932,6 +988,58 @@ class AgentGUI:
                     self._sync_input_state()
                 return
 
+    # ================= 日志区 / 状态条 =================
+    def _log_line(self, s, text):
+        """往任务日志追加一行（带时间戳），活动会话时写入滚动区并自动滚底。"""
+        line = f"[{time.strftime('%H:%M:%S')}] {text}"
+        s.log_lines.append(line)
+        if len(s.log_lines) > 600:            # 防止长任务把内存吃满
+            s.log_lines = s.log_lines[-600:]
+        if self.active is s:
+            self.logbox.configure(state="normal")
+            self.logbox.insert("end", line + "\n")
+            self.logbox.see("end")
+            self.logbox.configure(state="disabled")
+
+    def _replay_log(self, s):
+        """切回某个会话时，把它的日志重放进滚动区。"""
+        self.logbox.configure(state="normal")
+        self.logbox.delete("1.0", "end")
+        for line in s.log_lines[-600:]:
+            self.logbox.insert("end", line + "\n")
+        self.logbox.see("end")
+        self.logbox.configure(state="disabled")
+
+    def _clear_log(self):
+        s = self.active
+        if s:
+            s.log_lines = []
+        self.logbox.configure(state="normal")
+        self.logbox.delete("1.0", "end")
+        self.logbox.configure(state="disabled")
+
+    def _show_log_menu(self, event):
+        try:
+            self._log_menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            self._log_menu.grab_release()
+        return "break"
+
+    def _copy_log_selection(self):
+        try:
+            text = self.logbox.get("sel.first", "sel.last")
+        except Exception:
+            text = ""
+        if not text:
+            text = self.logbox.get("1.0", "end").strip()
+        if text:
+            self.root.clipboard_clear()
+            self.root.clipboard_append(text)
+
+    def _copy_text(self, text):
+        self.root.clipboard_clear()
+        self.root.clipboard_append(text)
+
     # ================= 事件应用（主线程） =================
     def _apply(self, s, kind, payload):
         if kind == "log":
@@ -940,6 +1048,9 @@ class AgentGUI:
             name, args = payload
             ev = s.add("tool", name=name, args=args, state="run",
                        result="", note="", img=None)
+            s.current_action = f"🔧 正在执行工具：{tool_display(name, args)}"
+            self._log_line(s, f"▶ 调用工具 {name}，参数 "
+                           + json.dumps(args, ensure_ascii=False)[:120])
             if self.active is s:
                 self.chat.append(ev)
         elif kind == "tool_result":
@@ -963,18 +1074,26 @@ class AgentGUI:
             m = re.search(r"第 (\d+)/", text)
             n = int(m.group(1)) if m else 0
             s.turn = n
+            s.current_action = f"🧠 第 {n}/{MAX_TURNS} 轮思考中…"
+            self._log_line(s, f"—— 第 {n} 轮 ——")
             ev = s.add("turn", n=n)
         elif kind == "assistant":
+            s.current_action = "💬 助手回复中…"
+            self._log_line(s, f"🤖 {text[:200]}")
             ev = s.add("assistant", text=text)
         elif kind == "error":
             # 工具错误马上会有 tool_result 到来刷新卡片；无卡片时才落一条系统行
             if s.events and s.events[-1].get("kind") == "tool" \
                     and s.events[-1].get("state") == "run":
                 return
+            s.current_action = "⚠ 出了点问题，正在处理…"
+            self._log_line(s, f"✗ {text[:200]}")
             ev = s.add("system", text="✗ " + text, tone="err")
         elif kind == "approved":
+            self._log_line(s, "已允许执行")
             ev = s.add("system", text=MSG_APPROVED, tone="ok")
         else:
+            self._log_line(s, text[:200])
             ev = s.add("system", text=text, tone="info")
         if self.active is s:
             self.chat.append(ev)
@@ -993,6 +1112,10 @@ class AgentGUI:
                     self.chat.append(ev)
             return
         ok = not text.startswith("错误")
+        s.current_action = ("✓ 工具执行完成，继续下一步…" if ok
+                            else f"✗ 工具 {name} 出了问题")
+        self._log_line(s, ("✓ " if ok else "✗ ") + f"{name} 完成，结果："
+                       + text.replace("\n", " ")[:150])
         if ev:
             ev.update(state="ok" if ok else "err", result=text)
             if name == "screenshot" and ok:
@@ -1016,14 +1139,20 @@ class AgentGUI:
         s.elapsed = (time.time() - s.start_time) if s.start_time else None
         if stopped:
             s.status = "stopped"
+            s.current_action = "⏹ 已停止"
+            self._log_line(s, "⏹ 任务已停止")
             ev = s.add("system", text=MSG_STOPPED, tone="warn")
         elif ok:
             s.status = "done"
             extra = f"用时 {s.elapsed:.0f} 秒。" if s.elapsed else ""
+            s.current_action = f"✓ 完成（{extra or '共用时：'}）"
+            self._log_line(s, f"✓ 任务完成，{extra or ''}共 {s.turn} 轮")
             ev = s.add("system", text=MSG_DONE_OK.format(extra=extra), tone="ok")
         else:
             s.status = "failed"
             reason = result if len(result) <= 100 else result[:100] + "…"
+            s.current_action = "✗ 失败"
+            self._log_line(s, f"✗ 任务失败：{reason}")
             ev = s.add("system", text=MSG_DONE_FAIL.format(reason=reason), tone="err")
         if self.active is s:
             self.chat.append(ev)
@@ -1066,6 +1195,9 @@ class AgentGUI:
             req = s.approval.pending()
             if req:
                 ev = s.add("confirm", req=req, state="pending")
+                s.current_action = "⏸ 停下来了，等你确认后才继续"
+                self._log_line(s, "⏸ 有风险操作，等你确认："
+                               + str(req)[:120])
                 if self.active is not s:
                     self._select(s)      # 切到该任务，render_all 已包含确认卡
                 else:
@@ -1089,7 +1221,18 @@ class AgentGUI:
 
     def _update_progress(self):
         s = self.active
+        # 脉动进度条：运行时来回游动，完成时满格，其余归零
+        if s and s.status == "running":
+            self._bar_t = (self._bar_t + 0.045) % 2.0
+            v = self._bar_t if self._bar_t <= 1.0 else 2.0 - self._bar_t
+            self.status_bar.set(0.06 + 0.88 * v)
+        elif s and s.status == "done":
+            self.status_bar.set(1.0)
+        else:
+            self.status_bar.set(0)
+
         if not s:
+            self.status_line.configure(text="")
             self.progress_label.configure(text="")
             return
         if s.status == "running" and s.start_time:
@@ -1098,16 +1241,21 @@ class AgentGUI:
             tokens = s.agent.total_tokens if s.agent else 0
             self.progress_label.configure(
                 text=f"⏳ {turn} · 已用 {elapsed} 秒 · ⚡ {fmt_tokens(tokens)} tokens")
+            self.status_line.configure(
+                text=s.current_action or "⟳ 思考中，请稍等…")
         elif s.status == "queued":
             ahead = sum(1 for x in self.sessions.values() if x.status == "running")
             self.progress_label.configure(text=f"⏸ 排队中 · 前面还有 {ahead} 个任务")
+            self.status_line.configure(text="⏸ 排队等上一任务跑完…")
         elif s.status in ("done", "failed", "stopped") and s.elapsed:
             tokens = s.tokens or (s.agent.total_tokens if s.agent else 0)
             icon = {"done": "✓", "failed": "✗", "stopped": "⏹"}[s.status]
             self.progress_label.configure(
                 text=f"{icon} 用时 {s.elapsed:.0f} 秒 · ⚡ {fmt_tokens(tokens)} tokens")
+            self.status_line.configure(text=s.current_action)
         else:
             self.progress_label.configure(text="")
+            self.status_line.configure(text="")
 
     # ================= 侧栏 / Tab 渲染 =================
     def _rebuild_tabs(self):
