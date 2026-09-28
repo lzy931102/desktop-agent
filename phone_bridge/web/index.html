@@ -1,0 +1,344 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#111827">
+<title>桌面助手 · 手机遥控</title>
+<style>
+  :root{
+    --bg:#111827; --card:#1F2937; --card2:#374151; --border:#4B5563;
+    --text:#F3F4F6; --muted:#E5E7EB; --faint:#D1D5DB;
+    --accent:#3B82F6; --accent-hover:#2563EB;
+    --ok:#34D399; --err:#F87171; --warn:#FBBF24;
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  html,body{margin:0;padding:0;background:var(--bg);color:var(--text)}
+  body{
+    font-family:system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;
+    font-size:16px;line-height:1.6;
+    padding:0 0 env(safe-area-inset-bottom) 0;
+    padding-top:env(safe-area-inset-top);
+  }
+  .wrap{max-width:640px;margin:0 auto;padding:12px}
+
+  /* 顶栏 */
+  header{position:sticky;top:0;z-index:10;background:rgba(17,24,39,.96);
+    backdrop-filter:blur(8px);border-bottom:1px solid var(--border);
+    padding:10px 12px;display:flex;align-items:center;gap:8px}
+  header .title{font-weight:700;font-size:16px}
+  header .spacer{flex:1}
+  .dot{width:9px;height:9px;border-radius:50%;background:var(--faint);flex:0 0 auto}
+  .dot.ok{background:var(--ok)} .dot.bad{background:var(--err)}
+  .conn{font-size:13px;color:var(--muted)}
+
+  .card{background:var(--card);border:1px solid var(--border);border-radius:14px;
+    padding:14px;margin-bottom:12px}
+
+  textarea{width:100%;min-height:88px;resize:vertical;background:var(--card2);
+    color:var(--text);border:1px solid var(--border);border-radius:10px;
+    padding:12px;font-size:16px;font-family:inherit;line-height:1.5}
+  textarea:focus{outline:2px solid var(--accent);outline-offset:1px}
+  textarea::placeholder{color:var(--faint)}
+
+  button{font-family:inherit;font-size:16px;border:none;border-radius:10px;
+    padding:13px 16px;font-weight:700;cursor:pointer;color:#fff}
+  button:disabled{opacity:.45;cursor:not-allowed}
+  .primary{background:var(--accent);width:100%;margin-top:10px}
+  .primary:active{background:var(--accent-hover)}
+  .danger{background:transparent;border:1px solid var(--err);color:var(--err);
+    width:100%;margin-top:10px;font-weight:600}
+
+  .examples{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+  .chip{background:var(--card2);border:1px solid var(--border);color:var(--muted);
+    border-radius:16px;padding:7px 12px;font-size:14px;cursor:pointer}
+
+  h2{font-size:14px;color:var(--faint);margin:18px 4px 8px;font-weight:600;
+    letter-spacing:.4px}
+
+  .state{display:inline-block;font-size:13px;font-weight:700;border-radius:6px;
+    padding:3px 9px;border:1px solid transparent}
+  .s-pending{color:var(--warn);border-color:var(--warn);background:rgba(251,191,36,.1)}
+  .s-running{color:var(--accent);border-color:var(--accent);background:rgba(59,130,246,.12)}
+  .s-done{color:var(--ok);border-color:var(--ok);background:rgba(52,211,153,.1)}
+  .s-failed{color:var(--err);border-color:var(--err);background:rgba(248,113,113,.1)}
+  .s-stopped{color:var(--faint);border-color:var(--faint);background:rgba(209,213,219,.08)}
+
+  .task-row{background:var(--card);border:1px solid var(--border);border-radius:12px;
+    padding:12px;margin-bottom:10px}
+  .task-row .top{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .task-row .txt{flex:1;min-width:0;font-size:15px;color:var(--text);
+    overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .task-row .meta{font-size:12px;color:var(--faint);margin-top:6px}
+  .task-row .result{margin-top:8px;font-size:14px;color:var(--muted);
+    background:var(--bg);border-radius:8px;padding:10px;white-space:pre-wrap;
+    word-break:break-word;max-height:220px;overflow:auto}
+
+  .events{margin-top:10px;max-height:300px;overflow:auto;background:var(--bg);
+    border-radius:8px;padding:10px}
+  .ev{font-size:14px;padding:4px 0;border-bottom:1px solid rgba(75,85,99,.35);
+    color:var(--muted);word-break:break-word;white-space:pre-wrap}
+  .ev:last-child{border-bottom:none}
+  .ev .k{font-weight:700;margin-right:6px}
+  .ev-tool .k{color:var(--accent)} .ev-result .k{color:var(--ok)}
+  .ev-error .k{color:var(--err)} .ev-turn .k{color:var(--warn)}
+  .ev-info .k{color:var(--faint)}
+
+  .empty{color:var(--faint);font-size:14px;text-align:center;padding:18px 0}
+  .banner{border-radius:10px;padding:11px 13px;font-size:14px;margin-bottom:12px}
+  .banner.err{background:rgba(248,113,113,.12);color:#FECACA;
+    border:1px solid var(--err)}
+  .banner.warn{background:rgba(251,191,36,.12);color:#FDE68A;
+    border:1px solid var(--warn)}
+  .banner button{margin-top:8px;padding:8px 12px;font-size:14px;background:var(--card2)}
+  .hint{font-size:13px;color:var(--faint);margin-top:8px}
+  .hidden{display:none !important}
+</style>
+</head>
+<body>
+<header>
+  <span class="dot" id="dot"></span>
+  <span class="title">🤖 桌面助手</span>
+  <span class="spacer"></span>
+  <span class="conn" id="conn">正在连电脑…</span>
+</header>
+
+<div class="wrap">
+  <div id="banner" class="banner err hidden"></div>
+
+  <div class="card">
+    <textarea id="text" placeholder="想让电脑做什么？用大白话写一句，例如：把桌面上所有图片整理到一个文件夹里"></textarea>
+    <button class="primary" id="send">交给它去做</button>
+    <div class="examples">
+      <span class="chip" data-fill="把桌面上的文件按类型分类整理">整理桌面</span>
+      <span class="chip" data-fill="打开记事本，写上今天要做的事">打开记事本</span>
+      <span class="chip" data-fill="把剪贴板里的内容保存成桌面上的一个文本文件">存剪贴板</span>
+    </div>
+    <div class="hint">电脑上的助手会立刻开始做，过程中你可以随时回来看。</div>
+  </div>
+
+  <h2>正在做的</h2>
+  <div id="current"><div class="empty">暂时没有在做的任务</div></div>
+
+  <h2>做过的</h2>
+  <div id="history"><div class="empty">还没有记录</div></div>
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  var params = new URLSearchParams(location.search);
+  var TOKEN = params.get("t") || sessionStorage.getItem("da_token") || "";
+  if (params.get("t")) {
+    sessionStorage.setItem("da_token", params.get("t"));
+    history.replaceState(null, "", location.pathname);   // 链接里的钥匙不留痕
+  }
+
+  var lastSeq = {};        // task_id -> 已拿到的事件序号
+  var currentId = null;
+  var failures = 0;
+  var el = {
+    dot: document.getElementById("dot"),
+    conn: document.getElementById("conn"),
+    banner: document.getElementById("banner"),
+    text: document.getElementById("text"),
+    send: document.getElementById("send"),
+    current: document.getElementById("current"),
+    history: document.getElementById("history")
+  };
+
+  function esc(s) {
+    return String(s == null ? "" : s)
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  }
+  function fmtSec(n) {
+    n = Math.max(0, Math.round(n || 0));
+    if (n < 60) return n + " 秒";
+    return Math.floor(n / 60) + " 分 " + (n % 60) + " 秒";
+  }
+  function showBanner(msg, kind, actionText, action) {
+    el.banner.className = "banner " + (kind || "warn");
+    el.banner.innerHTML = "";
+    el.banner.appendChild(document.createTextNode(msg));
+    if (actionText) {
+      var b = document.createElement("button");
+      b.textContent = actionText;
+      b.onclick = action;
+      el.banner.appendChild(document.createElement("br"));
+      el.banner.appendChild(b);
+    }
+  }
+  function hideBanner() { el.banner.className = "banner err hidden"; }
+
+  function api(path, opts) {
+    opts = opts || {};
+    opts.headers = Object.assign({ "X-Phone-Token": TOKEN }, opts.headers || {});
+    return fetch(path, opts).then(function (r) {
+      return r.json().catch(function () { return {}; }).then(function (j) {
+        if (r.status === 401) {
+          var e = new Error(j.message || "钥匙失效了");
+          e.unauthorized = true;
+          throw e;
+        }
+        if (!r.ok) throw new Error(j.message || ("请求失败（" + r.status + "）"));
+        return j;
+      });
+    });
+  }
+
+  function setConn(ok, text) {
+    el.dot.className = "dot " + (ok ? "ok" : "bad");
+    el.conn.textContent = text;
+  }
+
+  var KINDS = { info: "·", turn: "▸", tool: "🔧", result: "✓", error: "!" };
+  function renderEvents(list) {
+    return list.map(function (e) {
+      return '<div class="ev ev-' + esc(e.kind) + '"><span class="k">' +
+        (KINDS[e.kind] || "·") + '</span>' + esc(e.text) + "</div>";
+    }).join("");
+  }
+
+  function taskRow(t, expanded) {
+    var cls = "s-" + t.state;
+    var when = new Date((t.created_at || 0) * 1000).toLocaleString("zh-CN",
+      { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
+    var html = '<div class="task-row" data-id="' + esc(t.id) + '">' +
+      '<div class="top"><span class="state ' + cls + '">' + esc(t.state_label) +
+      '</span><span class="txt">' + esc(t.text) + "</span></div>" +
+      '<div class="meta">' + esc(when) + " · 用时 " + fmtSec(t.elapsed_s) + "</div>";
+    if (t.result) {
+      html += '<div class="result">' + esc(t.result) + "</div>";
+    } else if (t.state === "running" || t.state === "pending") {
+      html += '<div class="events" id="ev-' + esc(t.id) + '"></div>';
+    }
+    html += "</div>";
+    return html;
+  }
+
+  function render(state) {
+    var cur = state.current;
+    if (cur) {
+      currentId = cur.id;
+      el.current.innerHTML =
+        '<div class="task-row"><div class="top"><span class="state s-' + cur.state +
+        '">' + esc(cur.state_label) + '</span></div>' +
+        '<div class="meta" style="margin-top:8px">任务：' + esc(cur.text) + "</div>" +
+        '<div class="meta">已用时 ' + fmtSec(cur.elapsed_s) + "</div>" +
+        '<div class="events" id="ev-' + esc(cur.id) + '">' +
+          renderEvents(cur.events || []) + "</div>" +
+        '<button class="danger" id="stopbtn">不做了，停下</button></div>';
+      var sb = document.getElementById("stopbtn");
+      if (sb) sb.onclick = function () { stopTask(cur.id); };
+      // 新事件滚到底部
+      var box = document.getElementById("ev-" + cur.id);
+      if (box) box.scrollTop = box.scrollHeight;
+      if (cur.events && cur.events.length) {
+        lastSeq[cur.id] = cur.events[cur.events.length - 1].seq;
+      }
+      el.send.disabled = false;
+    } else {
+      currentId = null;
+      el.current.innerHTML = '<div class="empty">暂时没有在做的任务</div>';
+    }
+
+    var others = (state.tasks || []).filter(function (t) {
+      return !cur || t.id !== cur.id;
+    });
+    el.history.innerHTML = others.length
+      ? others.map(function (t) { return taskRow(t); }).join("")
+      : '<div class="empty">还没有记录</div>';
+
+    setConn(true, state.running ? "它正在干活" : "已连上电脑");
+    failures = 0;
+    hideBanner();
+  }
+
+  function tick() {
+    var q = "/api/state";
+    if (currentId) q += "?events_from=" + (lastSeq[currentId] || 0);
+    api(q).then(function (state) {
+      if (state.current && state.current.events) {
+        var sid = state.current.id, known = lastSeq[sid] || 0;
+        var fresh = state.current.events.filter(function (e) { return e.seq > known; });
+        if (fresh.length) {
+          var box = document.getElementById("ev-" + sid);
+          if (box) {
+            var atBottom = box.scrollTop + box.clientHeight >= box.scrollHeight - 24;
+            box.insertAdjacentHTML("beforeend", renderEvents(fresh));
+            if (atBottom) box.scrollTop = box.scrollHeight;
+          }
+        }
+        var list = state.current.events;
+        if (list.length) lastSeq[sid] = list[list.length - 1].seq;
+        // 状态可能变了（完成/失败），需要整块重绘
+        if (state.current.state !== "running") { render(state); }
+      } else {
+        render(state);
+      }
+    }).catch(function (e) {
+      if (e.unauthorized) {
+        setConn(false, "钥匙失效");
+        showBanner("这条链接已经失效了（电脑上换过钥匙）。请在电脑上重新打开「📱 手机连接」扫码。",
+          "err");
+        return;
+      }
+      failures++;
+      setConn(false, failures > 3 ? "连不上电脑" : "正在重连…");
+      if (failures === 4) {
+        showBanner("连不上电脑了。请确认：① 电脑上的助手开着；② 手机和电脑在同一个 WiFi；" +
+          "③ 电脑上的「📱 手机连接」开关是打开的。", "warn");
+      }
+    });
+  }
+
+  function send() {
+    var text = el.text.value.trim();
+    if (!text) { el.text.focus(); return; }
+    el.send.disabled = true;
+    api("/api/task", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: text })
+    }).then(function () {
+      el.text.value = "";
+      el.send.disabled = false;
+      tick();
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    }).catch(function (e) {
+      el.send.disabled = false;
+      showBanner(e.message || "没能发出去，再试一次", "err");
+    });
+  }
+
+  function stopTask(id) {
+    api("/api/stop", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ task_id: id })
+    }).then(tick).catch(function (e) {
+      showBanner(e.message || "停止请求没发出去", "err");
+    });
+  }
+
+  el.send.onclick = send;
+  document.querySelectorAll(".chip").forEach(function (c) {
+    c.onclick = function () {
+      el.text.value = c.getAttribute("data-fill");
+      el.text.focus();
+    };
+  });
+
+  if (!TOKEN) {
+    setConn(false, "链接不完整");
+    showBanner("这条链接缺了钥匙。请在电脑上重新打开「📱 手机连接」扫码。", "err");
+    el.send.disabled = true;
+  } else {
+    tick();
+    setInterval(tick, 1500);
+  }
+})();
+</script>
+</body>
+</html>
