@@ -1,11 +1,18 @@
 """agent_vision.py - 顶级电脑操作 agent 的核心扩展能力包
 
 对标 Computer Use 类 agent 的能力分层：
-1. 视觉理解   analyze_screen     —— qwen-vl 看懂屏幕（回答"屏幕上有什么/某应用开没开"）
+1. 视觉理解   analyze_screen     —— 看懂屏幕（默认走云端，回答"屏幕上有什么/某应用开没开"）
 2. 窗口管理   list_windows / focus_window —— 枚举并前置窗口（ctypes，零依赖）
 3. 元素级操作 list_ui_elements / click_ui_element —— Windows UIA 控件树，
    拿到控件真实名字与精确坐标，比"看图猜坐标"可靠得多
 4. 剪贴板    clipboard_read / clipboard_write
+
+★ 视觉模型为什么换（2026-09-28）：
+本机 Ollama 的 qwen-vl 实测看一张屏要 107 秒，而原来的等待上限只有 90 秒 ——
+也就是说「看屏幕」在本机这条路上**注定超时**。改用云端免费视觉模型后
+（glm-4v-flash + 1600 宽，实测 1.1~4.6 秒），快了两个数量级，认界面也更准。
+云端不可用时自动回退本机 qwen-vl，不至于两手空空。
+注意：云端模式会把截图上传到所选服务商。
 """
 import base64
 import ctypes
@@ -22,18 +29,54 @@ except ImportError:
     pyautogui = None
 
 OLLAMA_URL = "http://localhost:11434"
-VISION_MODEL = "qwen-vl"
+VISION_MODEL = "qwen-vl"              # 本机兜底模型（Ollama）
+VISION_CLOUD_MODEL = "glm-4v-flash"   # 云端默认视觉模型（智谱，免费）
+VISION_WIDTH = 1600                   # 送模型前的缩放宽度
+
+
+def _vision_config() -> dict:
+    """读取设置里的视觉后端配置；任何异常都退回「只用本机」。"""
+    cfg = {"mode": "local", "width": VISION_WIDTH, "timeout": 45,
+           "cloud_base_url": "", "cloud_api_key": "", "cloud_model": "",
+           "cloud_provider": ""}
+    try:
+        from core.settings import Settings, resolve_api_key, VISION_MODEL_PRESETS
+        settings = Settings()
+        vis = settings.get("vision", {}) or {}
+        cloud = settings.get("cloud", {}) or {}
+        provider = cloud.get("provider", "zhipu")
+        key, _src = resolve_api_key(cloud)
+        cfg.update({
+            "mode": str(vis.get("mode") or "auto").lower(),
+            "width": int(vis.get("width") or VISION_WIDTH),
+            "timeout": int(vis.get("timeout") or 45),
+            "cloud_provider": provider,
+            "cloud_base_url": str(cloud.get("base_url") or "").rstrip("/"),
+            "cloud_api_key": key,
+            "cloud_model": (vis.get("cloud_model")
+                            or VISION_MODEL_PRESETS.get(provider, "")
+                            or VISION_CLOUD_MODEL),
+        })
+    except Exception:
+        pass
+    return cfg
 
 
 # ============================ 1. 视觉理解 ============================
 
 class ScreenVision:
-    """用本地多模态模型看懂屏幕。只做"理解"，不做坐标定位
-    （小参数量量化模型的 grounding 噪声大，定位交给 UIA 控件树）。"""
+    """看懂屏幕。只做“理解”，不做坐标定位
+    （小参数模型的 grounding 噪声大，定位交给 UIA 控件树）。
 
-    def __init__(self, base_url: str = OLLAMA_URL, model: str = VISION_MODEL):
+    默认走云端视觉模型（快），云端没配好或调用失败时自动回退本机 qwen-vl。
+    ★ 云端模式下截图会上传到所选服务商，这是“用云端”的代价，界面须如实提示。
+    """
+
+    def __init__(self, base_url: str = OLLAMA_URL, model: str = VISION_MODEL,
+                 cfg: dict = None):
         self.base_url = base_url
         self.model = model
+        self.cfg = cfg if cfg is not None else _vision_config()
         self._session = None
         self._available = None  # None=未知
 
@@ -43,54 +86,151 @@ class ScreenVision:
             self._session.trust_env = False  # 本地服务，绕过一切代理
         return self._session
 
+    # ---------------- 后端选择 ----------------
+
+    @property
+    def backend(self) -> str:
+        """当前实际会用哪个后端：cloud / local
+
+        - mode=local → 永远本机
+        - mode=cloud → 云端（没配 Key 也走云端，让报错说清原因，别偷偷变慢）
+        - mode=auto  → 云端配好了就走云端，否则本机
+        """
+        mode = self.cfg.get("mode", "auto")
+        cloud_ready = bool(self.cfg.get("cloud_api_key")
+                           and self.cfg.get("cloud_base_url"))
+        if mode == "local":
+            return "local"
+        if mode == "cloud":
+            return "cloud"
+        return "cloud" if cloud_ready else "local"
+
+    def describe(self) -> str:
+        """一句话说明「看屏幕」走哪条路（供界面/日志显示）"""
+        if self.backend == "cloud":
+            return f"云端 · {self.active_model}"
+        return f"本机 · {self.active_model}"
+
+    @property
+    def active_model(self) -> str:
+        """当前后端实际会用的模型名"""
+        if self.backend == "cloud":
+            return self.cfg.get("cloud_model") or VISION_CLOUD_MODEL
+        return self.model
+
     def is_available(self) -> bool:
-        """视觉模型是否已就绪（带缓存，失败后 10 分钟内不重复探测）"""
+        """当前后端的视觉能力是否就绪（结果缓存，避免重复探测）
+
+        cloud：只看有没有配好 Key 与地址（不发请求，秒回）
+        local：查 Ollama 的 /api/tags 里有没有这个模型
+        """
+        if self.backend == "cloud":
+            return bool(self.cfg.get("cloud_api_key")
+                        and self.cfg.get("cloud_base_url"))
         if self._available is not None:
             return self._available
         try:
             r = self._http().get(f"{self.base_url}/api/tags", timeout=4)
             r.raise_for_status()
             names = [m.get("name", "") for m in r.json().get("models", [])]
-            self._available = any(n.split(":")[0] == self.model.split(":")[0] for n in names)
+            self._available = any(n.split(":")[0] == self.model.split(":")[0]
+                                  for n in names)
         except Exception:
             self._available = False
         return self._available
 
-    def ask(self, question: str, timeout: int = 90) -> str:
+    # ---------------- 主流程 ----------------
+
+    def ask(self, question: str, timeout: int = None) -> str:
         """截取当前屏幕，让视觉模型回答问题"""
         if pyautogui is None:
             return "错误: pyautogui 不可用，无法截屏"
-        if not self.is_available():
-            return ("错误: 视觉模型未就绪。请执行 ollama create 导入 qwen-vl "
-                    "多模态模型后重试；本任务可改用 list_ui_elements 等方式完成")
         try:
             img = pyautogui.screenshot()
         except Exception as e:
             return f"错误: 截屏失败 - {e}"
+        b64 = self._encode(img)
+        limit = timeout or int(self.cfg.get("timeout") or 45)
 
-        # 缩到 1024 宽，控制传输与推理耗时
+        if self.backend == "cloud":
+            text, err = self._ask_cloud(question, b64, limit)
+            if err is None:
+                return text
+            # 自动模式：云端失败就换本机，别让整个任务卡死在这一步
+            if self.cfg.get("mode", "auto") == "auto":
+                fallback, ferr = self._ask_local(question, b64, timeout=90)
+                if ferr is None:
+                    return (f"{fallback}\n（云端看屏幕失败，已改用本机模型；"
+                            f"原因：{err}）")
+                return (f"错误: 看屏幕失败。云端：{err}；本机：{ferr}。"
+                        f"可改用 list_windows / list_ui_elements 等不看屏的方式")
+            return f"错误: 云端看屏幕失败 - {err}"
+        text, err = self._ask_local(question, b64, timeout=limit)
+        return text if err is None else f"错误: 看屏幕失败 - {err}"
+
+    def _encode(self, img) -> str:
+        """按设置里的宽度缩放后编码为 base64 JPEG（宽度不够会看不清界面文字）"""
+        width = int(self.cfg.get("width") or VISION_WIDTH)
         w, h = img.size
-        if w > 1024:
-            img = img.resize((1024, int(h * 1024 / w)))
+        if width and w > width:
+            img = img.resize((width, int(h * width / w)))
         buf = io.BytesIO()
-        img.convert("RGB").save(buf, format="JPEG", quality=80)
-        b64 = base64.b64encode(buf.getvalue()).decode()
+        img.convert("RGB").save(buf, format="JPEG", quality=85)
+        return base64.b64encode(buf.getvalue()).decode()
 
+    def _ask_cloud(self, question: str, b64: str, timeout: int) -> tuple:
+        """云端（OpenAI 兼容 /chat/completions），返回 (文本, 错误或 None)"""
+        key = self.cfg.get("cloud_api_key")
+        base = self.cfg.get("cloud_base_url") or ""
+        if not key:
+            return "", "未配置云端 API Key（在「设置 → 云端模型」里填，或设环境变量）"
+        if not base:
+            return "", "未配置云端接口地址"
+        payload = {
+            "model": self.active_model,
+            "temperature": 0.1,
+            "messages": [{"role": "user", "content": [
+                {"type": "text", "text": question},
+                {"type": "image_url",
+                 "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
+            ]}],
+        }
+        try:
+            r = requests.post(f"{base}/chat/completions",
+                              headers={"Authorization": f"Bearer {key}"},
+                              json=payload, timeout=timeout)
+            if r.status_code != 200:
+                return "", f"HTTP {r.status_code} {r.text[:120]}"
+            data = r.json()
+            text = (data["choices"][0]["message"].get("content") or "").strip()
+            return (text or "视觉模型没有返回内容"), None
+        except requests.exceptions.Timeout:
+            return "", f"超时（{timeout} 秒）"
+        except requests.exceptions.ConnectionError as e:
+            return "", f"连不上服务商（{str(e)[:80]}）"
+        except Exception as e:
+            return "", f"{type(e).__name__}: {str(e)[:100]}"
+
+    def _ask_local(self, question: str, b64: str, timeout: int = 90) -> tuple:
+        """本机 Ollama，返回 (文本, 错误或 None)"""
+        if not self.is_available():
+            return "", ("本机视觉模型未就绪（Ollama 里没有 qwen-vl）——"
+                        "可执行 ollama create 导入，或改用云端视觉")
         try:
             r = self._http().post(
                 f"{self.base_url}/api/chat",
                 json={"model": self.model,
-                      "messages": [{"role": "user", "content": question, "images": [b64]}],
+                      "messages": [{"role": "user", "content": question,
+                                    "images": [b64]}],
                       "stream": False, "options": {"temperature": 0.1}},
                 timeout=timeout)
             r.raise_for_status()
             text = r.json().get("message", {}).get("content", "").strip()
-            return text or "视觉模型没有返回内容"
+            return (text or "视觉模型没有返回内容"), None
         except requests.exceptions.Timeout:
-            return ("错误: 视觉分析超时（90 秒）。改用 list_windows 看有哪些窗口、"
-                    "list_ui_elements 看窗口控件，比看屏快得多")
+            return "", f"本机视觉超时（{timeout} 秒，CPU 推理很慢）"
         except Exception as e:
-            return f"错误: 视觉分析失败 - {e}"
+            return "", f"{type(e).__name__}: {str(e)[:100]}"
 
 
 # ============================ 2. 窗口管理 ============================
@@ -433,6 +573,18 @@ def get_vision() -> ScreenVision:
     if _screen_vision is None:
         _screen_vision = ScreenVision()
     return _screen_vision
+
+
+def reset_vision():
+    """设置改动后调用：下次用新的视觉配置（换后端/换模型/换宽度）"""
+    global _screen_vision
+    _screen_vision = None
+
+
+def vision_status() -> str:
+    """给界面看的一句话状态：走云端还是本机、用的哪个模型、是否就绪"""
+    v = get_vision()
+    return f"{v.describe()}（{'就绪' if v.is_available() else '未就绪'}）"
 
 
 def analyze_screen(question: str) -> str:
