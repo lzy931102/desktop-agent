@@ -14,7 +14,8 @@
 - **截屏感知** - 使用 mss + OpenCV 实时捕获屏幕
 - **OCR 文字识别** - Tesseract 中英文识别
 - **图像识别** - HSV 颜色检测定位目标
-- **多模态理解** - Qwen2.5-VL 视觉语言模型
+- **看屏幕理解** - 云端视觉模型（默认 glm-4v-flash，1~5 秒一张屏；
+  可切换本机 qwen-vl，或按「自动」在云端失手时回退本机）
 - **图像定位** - pyautogui.locateOnScreen 模板匹配
 - **鼠标控制** - ctypes 精确点击
 - **键盘输入** - pyautogui 模拟按键
@@ -121,7 +122,8 @@ python gui.py
 - **对话流**：用户/助手气泡、工具调用卡片（参数 → 执行中 → 成功/失败/拦截）、
   高危操作内嵌确认卡、截屏缩略图（点击放大）
 - **输入区**：示例任务一键填入、Ctrl+Enter 开始、右下角显示轮次/耗时/Token 用量
-- **连接徽章**：右上角实时显示 Ollama 连接状态与视觉能力
+- **连接徽章**：右上角实时显示「当前是云端还是 Ollama、连没连上」，
+  后面跟着「看屏幕」走的是云端还是本机（如 `● 云端已连接 · 看屏 云端 · glm-4v-flash`）
 
 ### 顶栏功能
 
@@ -188,7 +190,7 @@ python -m PyInstaller DesktopAgent.spec --noconfirm
 | 截屏 | mss |
 | OCR | Tesseract |
 | 图像处理 | OpenCV |
-| 多模态 | Qwen2.5-VL |
+| 看屏幕（视觉） | 云端 glm-4v-flash（默认）/ 本机 qwen-vl |
 | 图像定位 | pyautogui.locateOnScreen |
 | 鼠标控制 | ctypes |
 | 键盘模拟 | pyautogui |

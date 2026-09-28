@@ -25,7 +25,8 @@ from core.approval import GuiApprovalBridge
 from core.audit import AuditLogger
 from core.history import TaskHistory
 from core.scheduler import Scheduler
-from core.settings import CLOUD_PRESETS, PROVIDER_ENUM, Settings, resolve_api_key
+from core.settings import (CLOUD_PRESETS, PROVIDER_ENUM, VISION_MODEL_OPTIONS,
+                           Settings, resolve_api_key)
 
 try:
     from plugin_system import PluginManager
@@ -38,7 +39,7 @@ except ImportError:
     SkillManager = None  # 技能系统未安装，fallback 到无技能模式
 
 # 版本号：显示在窗口标题栏，方便用户与 GitHub Releases 对照（避免旧版新版分不清）
-APP_VERSION = "2.0.13"
+APP_VERSION = "2.0.14"
 
 # 高分屏清晰度修复：不声明 DPI 感知时，Windows 会把整个窗口位图拉伸放大，
 # 文字就像隔着毛玻璃（用户反馈"字非常模糊"）。声明后按真实像素渲染，
@@ -1330,24 +1331,24 @@ class AgentGUI:
 
     # ================= 连接检测 =================
     def _check_connection(self):
+        mode = self.settings.get("model_mode", "local")
+        where = {"cloud": "云端", "auto": "自动切换"}.get(mode, "Ollama")
         try:
             client = build_llm_client(self.settings)
             ok, info = client.check_connection()
         except RuntimeError as e:
             ok, info = False, str(e)
-        vision_ok = agent_vision.get_vision().is_available() if ok else False
+        vis = agent_vision.get_vision()
         if ok:
-            extra = "，支持看屏分析" if vision_ok else ""
-            self.root.after(0, lambda: self._set_conn(True, info + extra))
+            sight = vis.describe() if vis.is_available() else "未就绪"
+            text = f"● {where}已连接 · 看屏 {sight}"
         else:
-            self.root.after(0, lambda: self._set_conn(False, info))
+            text = f"○ {where}未连接（{info}）"
+        self.root.after(0, lambda: self._set_conn(ok, text))
 
-    def _set_conn(self, ok, info):
+    def _set_conn(self, ok, text):
         self.ollama_ok = ok
-        if ok:
-            self.conn_label.configure(text=f"● Ollama 已连接 · {info}", text_color=OK)
-        else:
-            self.conn_label.configure(text=f"○ Ollama 未连接（{info}）", text_color=ERR)
+        self.conn_label.configure(text=text, text_color=OK if ok else ERR)
 
     # ================= 高危确认 =================
     def _show_confirm(self, req: dict):
@@ -2003,6 +2004,36 @@ class AgentGUI:
                      fg_color=INPUT_BG, border_color=BORDER).pack(side="left",
                                                                   padx=(8, 0))
 
+        # ---- 看屏幕（视觉理解）----
+        # 2026-09-28：看屏幕从「本机 qwen-vl」改走云端（本机一张屏 107 秒，必然超时）
+        vision_cfg = dict(self.settings.get("vision", {}) or {})
+        _VIS_LABELS = {"auto": "自动（推荐）", "cloud": "只用云端",
+                       "local": "只用本机"}
+        _VIS_BY_LABEL = {v: k for k, v in _VIS_LABELS.items()}
+        vis_mode_var = ctk.StringVar(value=_VIS_LABELS.get(
+            vision_cfg.get("mode", "auto"), "自动（推荐）"))
+        vis_model_var = ctk.StringVar(value=vision_cfg.get(
+            "cloud_model", VISION_MODEL_OPTIONS[0]))
+
+        vrow = ctk.CTkFrame(cloud_box, fg_color="transparent")
+        vrow.pack(fill="x", padx=14, pady=(8, 0))
+        ctk.CTkLabel(vrow, text="看屏幕", font=ctk.CTkFont(size=13),
+                     text_color=MUTED).pack(side="left")
+        ctk.CTkOptionMenu(vrow, values=list(_VIS_LABELS.values()),
+                          variable=vis_mode_var, width=118,
+                          fg_color=INPUT_BG, button_color=ACCENT).pack(
+            side="left", padx=(8, 12))
+        ctk.CTkLabel(vrow, text="视觉模型", font=ctk.CTkFont(size=13),
+                     text_color=MUTED).pack(side="left")
+        ctk.CTkOptionMenu(vrow, values=list(VISION_MODEL_OPTIONS),
+                          variable=vis_model_var, width=170,
+                          fg_color=INPUT_BG, button_color=ACCENT).pack(
+            side="left", padx=(8, 0))
+        ctk.CTkLabel(cloud_box,
+                     text="看屏幕会把当前截图上传给服务商；选「只用本机」则不上传（慢很多）",
+                     font=ctk.CTkFont(size=12), text_color=MUTED).pack(
+            anchor="w", padx=14, pady=(4, 0))
+
         test_row = ctk.CTkFrame(cloud_box, fg_color="transparent")
         test_row.pack(fill="x", padx=14, pady=(6, 12))
         test_result = ctk.CTkLabel(test_row, text="", font=ctk.CTkFont(size=13),
@@ -2069,6 +2100,12 @@ class AgentGUI:
                 "base_url": cbase_var.get().strip(),
                 "model": cmodel_var.get().strip(),
             })
+            self.settings.set("vision", {
+                **self.settings.get("vision", {}),
+                "mode": _VIS_BY_LABEL.get(vis_mode_var.get(), "auto"),
+                "cloud_model": vis_model_var.get().strip(),
+            })
+            agent_vision.reset_vision()  # 让新的视觉配置立刻生效
             self.settings.set("minimize_to_tray", bool(tray_var.get()))
             self.settings.set("feishu_webhook", feishu_var.get().strip())
             s = self.active
