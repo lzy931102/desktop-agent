@@ -24,6 +24,8 @@ security_logs/
 debug_*.png
 debug_*.py
 _*.py
+# 但包入口 __init__.py 必须入库，否则克隆后 import 失败；本行须紧跟 _*.py 之后
+!**/__init__.py
 test_debug*.py
 temp_*.py
 run_*.py
@@ -45,9 +47,9 @@ excel_screenshot.png
 wps_screenshot.png
 
 # 子目录
-agent/screenshots/
-agent/security_logs/
-agent/agent.log
+# agent/ 是旧架构遗留目录（待任务 14 清理），整体不入库；
+# 须放在上面的 !**/__init__.py 之后，否则其内部的 __init__.py 会被重新放行
+agent/
 
 # 归档目录
 archive/
