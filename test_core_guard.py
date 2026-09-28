@@ -422,9 +422,10 @@ def test_case_change_is_not_a_bypass():
 
 # ==================== is_retryable ====================
 
-def test_analyze_screen_not_retryable():
-    """v2.0.5 决策回归：analyze_screen 移出重试清单（重试只会加倍等待）。"""
-    assert guard.is_retryable("analyze_screen") is False
+def test_analyze_screen_is_retryable():
+    """v2.0.14 决策反转：看屏幕改走云端（2~6 秒）后纳入重试清单。
+    v2.0.5 的「不重试」只对本机 qwen-vl（107 秒/次）成立，前提已变。"""
+    assert guard.is_retryable("analyze_screen") is True
 
 
 def test_common_tools_retryable():

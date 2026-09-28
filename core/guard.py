@@ -76,13 +76,15 @@ TOOL_BASE_RISK = {
 
 
 # 可安全重试的工具（幂等或只读操作）；不在清单内的失败交回模型决策
-# analyze_screen 不重试：单次调用可达 1-2 分钟，重试只会加倍等待，失败应让模型换快速通道
+# analyze_screen 2026-09-28 起纳入重试：看屏幕已改走云端（约 2~6 秒，原先本机 qwen-vl
+# 要 107 秒），网络抖动导致的偶发失败重试一次是划算的。v2.0.5 的「不重试」结论
+# 只对本机慢模型成立，前提变了（见 agent_vision.py 头部说明）。
 RETRYABLE_TOOLS = {
     "click", "type_text", "press_key", "hotkey", "move_to", "scroll",
     "screenshot", "open_app", "wait", "list_windows", "focus_window",
     "list_ui_elements", "click_ui_element", "clipboard_read",
     "clipboard_write", "get_mouse_position", "get_screen_size",
-    "locate_on_screen",
+    "locate_on_screen", "analyze_screen",
 }
 
 

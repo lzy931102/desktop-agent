@@ -26,6 +26,16 @@ DEFAULTS = {
         "base_url": "https://open.bigmodel.cn/api/paas/v4",
         "model": "glm-4-flash",
     },
+    # 看屏幕（视觉理解）走哪个模型。
+    # auto = 配了云端 Key 就用云端，否则回退本机 Ollama 的 qwen-vl。
+    # width：送模型前把截图缩到这个宽度。实测 1600 比 1024 准得多
+    # （1024 会把界面认成别的软件），且云端耗时仍只有 1~5 秒。
+    "vision": {
+        "mode": "auto",  # auto | cloud | local
+        "cloud_model": "glm-4v-flash",
+        "width": 1600,
+        "timeout": 45,
+    },
     "minimize_to_tray": True,
     "feishu_webhook": "",  # 飞书群自定义机器人 Webhook（电脑↔手机消息通道）
     "plugins": {"disabled": []},  # 停用的插件文件名（不含 .py）；停用的插件不加载不执行
@@ -46,6 +56,15 @@ CLOUD_PRESETS = {
 # provider 字符串 → LLMProvider 枚举值（tongyi 走 OpenAI 兼容接口）
 PROVIDER_ENUM = {"zhipu": "zhipu", "deepseek": "deepseek", "openai": "openai",
                  "tongyi": "other"}
+
+# 各家可用的「看屏幕」视觉模型（DeepSeek 目前没有视觉模型，故不在此表）
+VISION_MODEL_PRESETS = {
+    "zhipu": "glm-4v-flash",       # 免费、实测 1~5 秒一张屏
+    "openai": "gpt-4o-mini",
+    "tongyi": "qwen-vl-plus",
+}
+# 需要「看得更细」时可换的更慢更强的模型（供设置界面选项用）
+VISION_MODEL_OPTIONS = ["glm-4v-flash", "glm-4.6v-flash", "glm-4v", "glm-4v-plus"]
 
 
 def resolve_api_key(cloud_cfg: dict) -> tuple:
