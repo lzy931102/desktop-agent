@@ -54,7 +54,9 @@ archive/
 
 # PyInstaller 打包产物
 build/
+build_new/
 dist/
+dist_new/
 *.spec
 DesktopAgent.exe
 
