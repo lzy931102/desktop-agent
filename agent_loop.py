@@ -36,7 +36,7 @@ from core.audit import AuditLogger
 from core.feishu import send_feishu_message as _feishu_send
 from core.history import TaskHistory
 from core.retry import run_with_retry
-from core.settings import PROVIDER_ENUM, Settings, resolve_api_key, validate_public_https
+from core.settings import MAX_TURNS, PROVIDER_ENUM, Settings, resolve_api_key, validate_public_https
 from core.verify import check_message_sent
 
 try:
@@ -147,22 +147,6 @@ class LLMClient:
             "_usage": {"prompt": getattr(usage, "prompt_tokens", 0) or 0,
                        "eval": getattr(usage, "completion_tokens", 0) or 0},
         }
-
-    def list_models(self) -> list:
-        """列出 Ollama 上可用的模型名（仅 OLLAMA provider）"""
-        if self.config.provider != LLMProvider.OLLAMA:
-            return []
-        base = self.config.base_url or "http://localhost:11434"
-        if not base.startswith(("http://", "https://")):
-            return []
-        try:
-            session = requests.Session()
-            session.trust_env = False
-            r = session.get(f"{base}/api/tags", timeout=5)
-            r.raise_for_status()
-            return [m.get("name", "") for m in r.json().get("models", []) if m.get("name")]
-        except Exception:
-            return []
 
     def ping(self) -> tuple:
         """云端连通性测试：发一次最小对话请求，返回 (ok, 描述)"""
@@ -942,7 +926,7 @@ class DesktopAgent:
         system prompt，并注册 install_skill 工具；不提供则无技能能力。
         """
         self.workdir = workdir or Path.cwd()
-        self.max_turns = 10
+        self.max_turns = MAX_TURNS
         self._image_located = False   # locate_on_screen 是否成功（供旧逻辑兼容）
         self._last_locate_failed = False  # 上一次 locate_on_screen 失败 → 拦截下一次盲点击
         self._stop_requested = False  # 用户请求停止
@@ -1232,6 +1216,12 @@ class DesktopAgent:
                 })
 
         return "已达到最大轮次限制，任务未完成。请尝试把任务描述得更简单一些。"
+
+
+# ---- 遗留 CLI 配置链（load_config / save_config / setup_wizard / main）----
+# 读取根目录 agent_config.json 的旧命令行入口，与 core/settings.json、.env 三套
+# 配置并存；应用主路径（gui.py）已不走这里。遗留待评估下线，完整收敛另行立项，
+# 新代码勿在此链上扩展。
 
 
 def load_config() -> LLMConfig:

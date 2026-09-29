@@ -44,6 +44,10 @@ DEFAULTS = {
     "onboarding_choice": "",
 }
 
+# Agent 单次任务的最大思考-行动轮数上限（REL-P1-3 单一来源：gui 界面展示与
+# agent_loop 循环都引用这里，改一处即全局生效）
+MAX_TURNS = 10
+
 # 云端服务商预设与对应的环境变量名
 CLOUD_PRESETS = {
     "智谱": {"provider": "zhipu", "base_url": "https://open.bigmodel.cn/api/paas/v4",

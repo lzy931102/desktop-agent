@@ -27,8 +27,9 @@ from core.audit import AuditLogger
 from core.history import TaskHistory
 from core.retry import is_failed_result
 from core.scheduler import Scheduler
-from core.settings import (CLOUD_PRESETS, PROVIDER_ENUM, VISION_MODEL_OPTIONS,
-                           Settings, resolve_api_key, should_show_onboarding)
+from core.settings import (CLOUD_PRESETS, MAX_TURNS, PROVIDER_ENUM,
+                           VISION_MODEL_OPTIONS, Settings, resolve_api_key,
+                           should_show_onboarding)
 
 try:
     from plugin_system import PluginManager
@@ -62,7 +63,6 @@ except ImportError:
 
 OLLAMA_URL = "http://localhost:11434"
 MODEL_NAME = "qwen2.5-coder:7b"
-MAX_TURNS = 10
 DEFAULT_MAX_CONCURRENT = 3
 # 首启引导（UX-P1-6）：本地路线的官方下载直链 / 云端配置图文教程
 OLLAMA_DOWNLOAD_URL = "https://ollama.com/download"
