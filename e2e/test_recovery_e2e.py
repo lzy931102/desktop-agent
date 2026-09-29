@@ -898,11 +898,10 @@ class T9_RecoveryTest:
         report_text = self.report.generate()
         print(report_text)
 
-        # 保存报告
-        report_filename = f"t9_test_report_{int(time.time())}.txt"
-        with open(report_filename, "w", encoding="utf-8") as f:
-            f.write(report_text)
-        log(f"\n报告已保存到: {report_filename}")
+        # 保存报告（规范化到当前工作目录，防路径穿越）
+        report_path = Path.cwd() / f"t9_test_report_{int(time.time())}.txt"
+        report_path.write_text(report_text, encoding="utf-8")
+        log(f"\n报告已保存到: {report_path}")
 
         return self.report
 

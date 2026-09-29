@@ -1,6 +1,6 @@
 """agent_loop 对 guard 分级的处理路径回归测试（issue #2：medium 落地验证）。
 
-用假 LLM（沿用 test_early_stop.py 的 mock 模式）+ 桩工具注册表驱动
+用假 LLM（沿用 e2e/test_early_stop.py 的 mock 模式）+ 桩工具注册表驱动
 DesktopAgent._run_loop，验证三条分级路径互不等价：
 
 - high  ：走 approval（AutoDenyPolicy 下被拒），工具不执行

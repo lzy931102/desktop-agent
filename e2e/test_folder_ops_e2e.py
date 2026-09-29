@@ -26,9 +26,9 @@ def wait_window(title, timeout=5):
     """等待窗口出现"""
     import ctypes
     from ctypes import wintypes
-    
+
     user32 = ctypes.windll.user32
-    
+
     start = time.time()
     while time.time() - start < timeout:
         found = False
@@ -42,7 +42,7 @@ def wait_window(title, timeout=5):
                     if title.lower() in buf.value.lower():
                         found = True
             return True
-        
+
         WNDENUMPROC = ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)
         user32.EnumWindows(WNDENUMPROC(callback), 0)
         if found:
@@ -53,11 +53,11 @@ def wait_window(title, timeout=5):
 def main():
     total_start = time.time()
     step_durations = []
-    
+
     print("=" * 60, flush=True)
     print("P3 文件夹操作 E2E Test (GUI)", flush=True)
     print("=" * 60, flush=True)
-    
+
     try:
         # Step 1: 打开资源管理器
         t = time.time()
@@ -65,14 +65,14 @@ def main():
         time.sleep(2)
         dur = log_step(1, "打开资源管理器", t)
         step_durations.append(dur)
-        
+
         # Step 2: 等待窗口
         t = time.time()
         ready = wait_window("agent_test", timeout=5)
         time.sleep(1)
         dur = log_step(2, f"等待窗口 ({'OK' if ready else 'FAIL'})", t)
         step_durations.append(dur)
-        
+
         # Step 3: 新建文件夹 (Ctrl+Shift+N)
         t = time.time()
         pyautogui.hotkey('ctrl', 'shift', 'n')
@@ -83,7 +83,7 @@ def main():
         time.sleep(1)
         dur = log_step(3, f"新建文件夹 {TEST_FOLDER}", t)
         step_durations.append(dur)
-        
+
         # Step 4: 进入文件夹 (Enter)
         t = time.time()
         # 新建后文件夹已选中，直接Enter进入
@@ -91,7 +91,7 @@ def main():
         time.sleep(1)
         dur = log_step(4, "进入文件夹", t)
         step_durations.append(dur)
-        
+
         # Step 5: 新建文本文件
         t = time.time()
         # 右键 → 新建 → 文本文档
@@ -112,7 +112,7 @@ def main():
         time.sleep(0.5)
         dur = log_step(5, f"新建文件 {TEST_FILE}", t)
         step_durations.append(dur)
-        
+
         # Step 6: 复制文件
         t = time.time()
         # 文件应该已选中
@@ -127,7 +127,7 @@ def main():
         time.sleep(0.5)
         dur = log_step(6, "复制文件 (Ctrl+C → Ctrl+V)", t)
         step_durations.append(dur)
-        
+
         # Step 7: 重命名 (F2)
         t = time.time()
         # 选中第一个文件
@@ -143,7 +143,7 @@ def main():
         time.sleep(0.5)
         dur = log_step(7, "重命名文件", t)
         step_durations.append(dur)
-        
+
         # Step 8: 删除 (Delete)
         t = time.time()
         pyautogui.press('delete')
@@ -152,14 +152,14 @@ def main():
         time.sleep(1)
         dur = log_step(8, "删除文件", t)
         step_durations.append(dur)
-        
+
         # Step 9: 关闭资源管理器
         t = time.time()
         pyautogui.hotkey('alt', 'f4')
         time.sleep(1)
         dur = log_step(9, "关闭资源管理器", t)
         step_durations.append(dur)
-        
+
         # Step 10: 验证目录状态
         t = time.time()
         folder_path = os.path.join(TEST_DIR, TEST_FOLDER)
@@ -170,7 +170,7 @@ def main():
             files = []
         dur = log_step(10, f"验证: 文件夹={folder_exists}, 文件={files}", t)
         step_durations.append(dur)
-        
+
         # Step 11: 清理
         t = time.time()
         if folder_exists:
@@ -180,7 +180,7 @@ def main():
             os.rmdir(folder_path)
         dur = log_step(11, "清理测试目录", t)
         step_durations.append(dur)
-        
+
         # 打印汇总
         total_time = time.time() - total_start
         print("\n" + "=" * 60, flush=True)
@@ -190,12 +190,12 @@ def main():
             print(f"  Step {i:2d}: {d:.2f}s", flush=True)
         print("-" * 60, flush=True)
         print(f"  总耗时: {total_time:.2f}s", flush=True)
-        
+
         # 判断通过：文件夹曾经存在，最终被清理
         passed = folder_exists and total_time < 60
         print(f"\n{'✓ TEST PASSED' if passed else '✗ TEST FAILED'}", flush=True)
         return passed
-        
+
     except Exception as e:
         print(f"\n✗ ERROR: {e}", flush=True)
         import traceback
