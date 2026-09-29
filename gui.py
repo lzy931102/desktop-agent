@@ -251,6 +251,8 @@ class TaskSession:
         self.stop_flag = False
         self.log_lines = []            # 实时日志（滚动区展示，可选中复制）
         self.current_action = ""       # 当前步骤描述（状态条展示）
+        self.closing = False           # 已确认关闭、等线程收尾后再从列表摘除
+        self.stop_requested_at = None  # 请求停止的时刻（30 秒兜底提示用）
 
     # ---- 事件（主线程调用） ----
     def add(self, kind, **kw):
@@ -271,6 +273,8 @@ class TaskSession:
         self.status = "running"
         self.start_time = time.time()
         self.turn = 0
+        self.closing = False
+        self.stop_requested_at = None
         threading.Thread(target=self._run, args=(app,), daemon=True).start()
 
     def _run(self, app):
@@ -875,14 +879,29 @@ class AgentGUI:
         self.start_button.configure(text=text, fg_color=color, hover_color=hover)
 
     def close_session(self, s):
+        if s.closing:
+            return  # 停止流程已在走，等线程收尾即可
         if s.status == "running":
             if not messagebox.askyesno(
                     "任务还在跑",
-                    f"「{s.title}」还在执行中，要停止并关闭它吗？"):
+                    f"「{s.title}」还在执行中，要停止并关闭它吗？\n"
+                    f"（停止不是瞬间生效：当前这步执行完才真正停下）"):
                 return
+            s.closing = True
+            s.stop_requested_at = time.time()
             s.stop()
-        elif s.status == "queued":
+            s.current_action = "⏹ 正在停止…当前这步跑完就关闭"
+            s.add("system", text="已发出停止请求：当前这步执行完就关闭，请稍等。",
+                  tone="faint")
+            if self.active is s:
+                self.chat.append(s.events[-1])
+            self._sidebar_dirty = self._tabs_dirty = True
+            return
+        if s.status == "queued":
             s.status = "draft"
+        self._remove_session(s)
+
+    def _remove_session(self, s):
         self.sessions.pop(s.id, None)
         if not self.sessions:
             self.new_session()
@@ -916,6 +935,9 @@ class AgentGUI:
     def _start_or_stop(self):
         s = self.active
         if s.status == "running":
+            if s.closing:
+                return  # 关闭流程已在走，避免重复停止提示
+            s.stop_requested_at = time.time()
             s.stop()
             self.start_button.configure(text="正在停止…")
             s.add("system", text="收到，正在停下…", tone="faint")
@@ -1218,6 +1240,12 @@ class AgentGUI:
                 self.root.lift()
                 self._sidebar_dirty = self._tabs_dirty = True
 
+        # 已确认关闭的会话：等 done 事件落地（线程真正收尾）再从列表摘除，
+        # 避免"列表里没了、线程还在跑"的假象
+        for s in [x for x in self.sessions.values()
+                  if x.closing and x.status != "running"]:
+            self._remove_session(s)
+
         self._launch_next_queued()
 
         if self._tabs_dirty:
@@ -1252,8 +1280,13 @@ class AgentGUI:
             tokens = s.agent.total_tokens if s.agent else 0
             self.progress_label.configure(
                 text=f"⏳ {turn} · 已用 {elapsed} 秒 · ⚡ {fmt_tokens(tokens)} tokens")
-            self.status_line.configure(
-                text=s.current_action or "⟳ 思考中，请稍等…")
+            if s.stop_requested_at and time.time() - s.stop_requested_at > 30:
+                # 停止兜底：长步骤（LLM 推理/看屏）没有边界时，别让人干等
+                self.status_line.configure(
+                    text="⏹ 已发出停止请求：当前步骤跑完就真停，请稍候…")
+            else:
+                self.status_line.configure(
+                    text=s.current_action or "⟳ 思考中，请稍等…")
         elif s.status == "queued":
             ahead = sum(1 for x in self.sessions.values() if x.status == "running")
             self.progress_label.configure(text=f"⏸ 排队中 · 前面还有 {ahead} 个任务")
@@ -1300,7 +1333,8 @@ class AgentGUI:
             w.destroy()
         for s in reversed(list(self.sessions.values())):  # 新任务在上
             color = STATUS_COLOR[s.status]
-            sub = {"running": f"第 {s.turn}/{MAX_TURNS} 轮",
+            sub = {"running": ("⏹ 正在停止，这步跑完就关" if s.closing
+                               else f"第 {s.turn}/{MAX_TURNS} 轮"),
                    "queued": "排队等待中",
                    "done": f"完成 · {s.elapsed:.0f} 秒" if s.elapsed else "完成",
                    "failed": "失败了，点进去看看",
@@ -1439,20 +1473,26 @@ class AgentGUI:
     def _on_close(self):
         busy = sum(1 for s in self.sessions.values()
                    if s.status in ("running", "queued"))
-        if busy and messagebox.askyesno(
-                "还有任务在跑",
-                f"有 {busy} 个任务还没完成。要全部停止并退出吗？\n"
-                f"（选「否」可以最小化到托盘让任务继续跑）"):
-            self._real_exit()
-            return
+        # 文案跟实际能力走：只有托盘真的可用才承诺"最小化继续跑"，
+        # 否则选「否」就是直接退出——不能许诺做不到的事
+        tray_ok = bool(self.tray) and self.settings.get("minimize_to_tray", True)
         if busy:
-            if self.tray and self.settings.get("minimize_to_tray", True):
+            if tray_ok:
+                detail = "（选「否」可以最小化到托盘让任务继续跑）"
+            else:
+                detail = "（选「否」会关闭程序，正在执行的任务将中断）"
+            if messagebox.askyesno(
+                    "还有任务在跑",
+                    f"有 {busy} 个任务还没完成。要全部停止并退出吗？\n{detail}"):
+                self._real_exit()
+                return
+            if tray_ok:
                 self.root.withdraw()
                 self._update_tray(f"Desktop Agent · {busy} 个任务运行中")
                 return
             self._real_exit()
             return
-        if self.tray and self.settings.get("minimize_to_tray", True):
+        if tray_ok:
             self.root.withdraw()
             self._update_tray("Desktop Agent · 就绪（已最小化到托盘）")
             return

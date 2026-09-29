@@ -567,7 +567,7 @@ TOOLS_SCHEMA = [
         "type": "function",
         "function": {
             "name": "wait",
-            "description": "等待秒数",
+            "description": "等待秒数（上限 60 秒，超出部分会被截断）",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -782,6 +782,33 @@ def _open_app(app_name: str):
     return f"opened {app_name}"
 
 
+WAIT_MAX_SECONDS = 60  # wait 上限：模型传 seconds=100000 不能真睡 27 小时
+
+
+def _wait_tool(args, stop_requested=None):
+    """wait 工具：钳到 60 秒上限，每秒分段睡眠并检查停止标志。
+
+    之前是单发 time.sleep(seconds)——无上限，且停止标志要到下一个
+    工具边界才被检查，sleep 期间点停止界面会一直停在"正在停止…"。
+    """
+    try:
+        seconds = float(args.get("seconds", 1))
+    except (TypeError, ValueError):
+        seconds = 1.0
+    if seconds != seconds:  # NaN（json.loads 接受 NaN 字面量）会让下面的循环永不退出
+        seconds = 1.0
+    seconds = min(max(seconds, 0.0), WAIT_MAX_SECONDS)
+    deadline = time.monotonic() + seconds
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return f"waited {seconds:g}s"
+        if stop_requested is not None and stop_requested():
+            return (f"已等待 {seconds - remaining:.1f} 秒，"
+                    f"收到停止请求，提前结束等待")
+        time.sleep(min(1.0, remaining))
+
+
 TOOL_FUNCTIONS = {
     "click": lambda args: pyautogui.click(args["x"], args["y"], button=args.get("button", "left"), clicks=args.get("clicks", 1)) or f"clicked at ({args['x']}, {args['y']})",
     "type_text": lambda args: (_type_text_with_space(args["text"], args.get("interval", 0.05)) or f"typed: {args['text'][:50]}"),
@@ -791,7 +818,7 @@ TOOL_FUNCTIONS = {
     "scroll": lambda args: pyautogui.scroll(args["clicks"]) or f"scrolled {args['clicks']}",
     "screenshot": lambda args: (lambda _p: (Path("screenshots").mkdir(exist_ok=True), pyautogui.screenshot().save(Path("screenshots") / _p)) and f"screenshot saved: screenshots/{_p}")(args.get("path", f"screenshot_{int(time.time())}.png")),
     "locate_on_screen": _locate_on_screen,
-    "wait": lambda args: (time.sleep(args.get("seconds", 1)) or f"waited {args.get('seconds', 1)}s"),
+    "wait": lambda args: _wait_tool(args),
     "open_app": lambda args: _open_app(args["app_name"]),
     "get_mouse_position": lambda args: (lambda pos: f"mouse at {pos}")(pyautogui.position()),
     "get_screen_size": lambda args: (lambda sz: f"screen size {sz}")(pyautogui.size()),
@@ -974,6 +1001,10 @@ class DesktopAgent:
         # 内置工具
         if name not in TOOL_FUNCTIONS:
             return f"错误: 未知工具 {name}"
+        # wait 特判：只有这里拿得到 self 的停止标志（TOOL_FUNCTIONS 是无 self
+        # 的函数表），分段睡眠让停止请求秒级生效，而不是等下一个工具边界
+        if name == "wait":
+            return _wait_tool(args, lambda: self._stop_requested)
         retryable = risk != "high" and guard.is_retryable(name)
 
         # click 前截图供"动作后校验"做界面变化对比

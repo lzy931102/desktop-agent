@@ -12,6 +12,7 @@ DesktopAgent._run_loop，验证三条分级路径互不等价：
 （无审计事件、无提示，静默执行）。
 """
 import json
+import time
 from pathlib import Path
 
 import pytest
@@ -141,3 +142,56 @@ def test_medium_without_auditor_still_executes(env, monkeypatch):
     assert len(stub.calls) == 1
     assert result == "任务完成"
     assert any("[敏感操作]" in m for m in logs)
+
+
+# ================= wait 工具：上限钳位 + 分段停止（UX-P1-4） =================
+
+def test_wait_clamps_seconds_to_60(monkeypatch):
+    """seconds=100000 不许真睡：钳到 WAIT_MAX_SECONDS。
+
+    生产上限是 60 秒（真等 60 秒套件受不了），这里把上限压小验证
+    "大输入被钳到上限、而不是按输入睡"这一行为本身。
+    """
+    monkeypatch.setattr(agent_loop, "WAIT_MAX_SECONDS", 0.05)
+    start = time.monotonic()
+    result = agent_loop._wait_tool({"seconds": 100000})
+    assert time.monotonic() - start < 5
+    assert result == "waited 0.05s"
+
+
+def test_wait_garbage_and_negative_seconds():
+    """非法/负数输入不抛异常：非法按 1 秒，负数按 0 秒（立即返回）。"""
+    assert agent_loop._wait_tool({"seconds": "abc"}) == "waited 1s"
+    assert agent_loop._wait_tool({"seconds": None}) == "waited 1s"
+    assert agent_loop._wait_tool({"seconds": -5}) == "waited 0s"
+
+
+def test_wait_stop_flag_breaks_sleep_quickly():
+    """sleep 期间停止标志已置位 → 秒级返回，不等睡满。"""
+    start = time.monotonic()
+    result = agent_loop._wait_tool({"seconds": 60}, stop_requested=lambda: True)
+    assert time.monotonic() - start < 2
+    assert "停止" in result
+
+
+def test_wait_checks_stop_each_segment_not_zero_times():
+    """停止标志在第 2 秒才翻转 → 应睡满约 2 秒后返回，证明分段检查真的在跑。"""
+    start = time.monotonic()
+    flip_at = start + 2.0
+
+    result = agent_loop._wait_tool(
+        {"seconds": 60},
+        stop_requested=lambda: time.monotonic() >= flip_at)
+    elapsed = time.monotonic() - start
+    assert elapsed >= 1.9
+    assert "停止" in result
+
+
+def test_execute_tool_wait_honors_agent_stop_flag():
+    """接线回归：_execute_tool 必须把 self 的停止标志传给 wait（防止特判被删）。"""
+    agent = DesktopAgent()
+    agent._stop_requested = True
+    start = time.monotonic()
+    result = agent._execute_tool("wait", {"seconds": 100000}, "none")
+    assert time.monotonic() - start < 2
+    assert "停止" in result
