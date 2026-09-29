@@ -1,5 +1,11 @@
 # Project Status
 
+> **⚠ 历史任务日志（2026-09-21 ~ 09-23，v1→v2 过渡期）**：本文按日期记录当时的
+> E2E 验收结论，属历史事实。文中「Files Created」列出的脚本多已迁入 `e2e/`；
+> `ai_brain.py`、`test_ai_brain_e2e.py`、`test_multimodal_e2e.py`、`test_stability_e2e.py`
+> 已于 2026-09-30 清理归档（见 docs/根目录清理清单-2026-09-30.md），路径不再反映
+> 当前仓库结构。现状以 [README](README.md) 为准。
+
 ## Task: P2-1 Excel E2E Test
 
 **Status**: ✓ COMPLETED  

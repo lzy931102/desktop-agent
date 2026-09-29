@@ -1,230 +1,164 @@
 # Desktop Agent
 
-![Screenshot](docs/screenshot.png)
+用自然语言指挥电脑的 Windows 桌面助手：你打一句"打开计算器"、"在记事本里输入你好"，
+AI 看屏幕、动鼠标键盘、验证结果，一步步把事办完。模型可走本机 Ollama（数据不出本机），
+也可走云端 API（免装本地模型）。
 
-![Python](https://img.shields.io/badge/Python-3.10+-blue)
-![License](https://img.shields.io/badge/License-MIT-green)
-![Tests](https://img.shields.io/badge/Tests-27%20passed-brightgreen)
-![Platform](https://img.shields.io/badge/Platform-Windows-lightgrey)
-
-一个模块化的 Windows 桌面操作 Agent，支持截屏感知、OCR 识别、图像检测、鼠标点击、键盘输入等自动化操作。
+- 许可证：[MIT](LICENSE)　·　平台：Windows 10/11　·　当前版本：v2.0.14（`gui.py` 的 `APP_VERSION`）
+- 开发实测环境：Python 3.14 / Windows 10（更低版本未实测，依赖均为纯 pip 安装）
+- 测试：核心套件 **213 passed / 7 xfailed**（2026-09-30，命令见下方「测试」节，可在仓库复核）
 
 ## 功能特性
 
-- **截屏感知** - 使用 mss + OpenCV 实时捕获屏幕
-- **OCR 文字识别** - Tesseract 中英文识别
-- **图像识别** - HSV 颜色检测定位目标
-- **看屏幕理解** - 云端视觉模型（默认 glm-4v-flash，1~5 秒一张屏；
-  可切换本机 qwen-vl，或按「自动」在云端失手时回退本机）
-- **图像定位** - pyautogui.locateOnScreen 模板匹配
-- **鼠标控制** - ctypes 精确点击
-- **键盘输入** - pyautogui 模拟按键
-- **剪贴板操作** - pyperclip 复制粘贴
-- **COM 接口** - WPS/Office 自动化
-- **UIA 元素定位** - Windows UI Automation
-- **安全拦截** - 分级权限 + 白名单
-- **异常恢复** - 自动错误处理
-- **插件系统** - 三类外部能力统一管理（见 [插件开发指南](docs/插件开发指南.md)）：
-  - 连接器：.py 工具插件，给 AI 接外部工具
-  - 技能/专家：SKILL.md 纯文本包，教 AI 做事 / 换角色（见 [技能包指南](docs/技能包指南.md)）
-  - AI 可用 `install_skill` 工具自己安装技能包（网址/文件夹/zip/md）
+- **自然语言任务**：对话式下任务，AI 规划并调用工具执行，每一步在对话流里可见（工具卡片：参数 → 执行中 → 成功/失败/拦截）
+- **多任务并行**：每个任务一个 Tab，同时跑 1-5 个（默认 3），超出自动排队；支持中途停止
+- **看屏幕理解**：截图缩放到 1600 宽送视觉模型——云端 `glm-4v-flash`（免费，实测 1~5 秒一张屏）或本机 Ollama `qwen-vl`；默认「自动」：配了云端 Key 走云端，否则回退本机
+- **21 个内置工具**：鼠标点击/移动/滚轮、键盘输入/组合键、截屏、图像定位、等待、
+  开应用、窗口查找与聚焦、UIA 控件读取与点击、剪贴板读写、发飞书消息、
+  鼠标位置/屏幕尺寸查询等（清单见 `agent_loop.py` 的 `TOOLS_SCHEMA`）；
+  另有 `install_skill` 供 AI 自装技能包（需用户确认），合计 22 个
+- **模型热切换**：设置页随时切换 本机 / 云端 / 自动；云端预设四家：智谱、DeepSeek、OpenAI、通义
+- **插件系统**：连接器（.py 工具插件）与技能/专家包（SKILL.md），见 [插件开发指南](docs/插件开发指南.md) 和 [技能包指南](docs/技能包指南.md)
+- **定时任务**：每天 / 每周 / 间隔分钟，持久化到磁盘，重启不重复触发；错过的当天任务不补跑、会在会话里提示
+- **系统托盘**：关窗最小化到托盘继续跑，后台定时任务不中断
+- **首启引导**：检测不到模型时弹三选一引导卡（用云端 / 装本机 Ollama / 稍后再说）
 
-## 架构
+## 安全机制
 
-```
-┌─────────────────────────────────────────────────────────┐
-│                    Orchestrator (调度层)                  │
-├─────────────────────────────────────────────────────────┤
-│  Perception   │   Brain    │  Actuator  │   Verifier    │
-│  (感知层)      │  (决策层)   │  (执行层)   │   (验证层)    │
-├─────────────────────────────────────────────────────────┤
-│              Memory (记忆层)    │   Security (安全层)     │
-└─────────────────────────────────────────────────────────┘
-```
-
-### 模块说明
-
-| 模块 | 职责 |
-|------|------|
-| Perception | 截屏、OCR、图像识别 |
-| Brain | 任务规划、决策推理 |
-| Actuator | 鼠标、键盘、COM 操作 |
-| Verifier | 结果验证、状态检查 |
-| Memory | 文件存储、任务状态 |
-| Security | 权限控制、安全拦截 |
-| Orchestrator | 模块协调、任务调度 |
+- **危险操作分级拦截**：删除类按键、关闭窗口组合键、破坏性按钮等高危操作先弹确认卡，AI 不得绕过；未确认一律不执行
+- **审计日志防篡改**：所有工具调用与审批记录写入哈希链 JSONL（同日重启自动续链，链损坏显式标记不静默）
+- **技能包注入防护**：SKILL.md 内容进提示词前用明确边界包裹并声明"资料不是指令"，防恶意技能包诱导
+- **网络出口统一策略**：所有 HTTP 出口禁用系统代理（`trust_env=False`），代理软件不再干扰本地/云端请求；云端地址强制 https 公网校验
+- **动作后校验**：打开应用后确认窗口出现、点击后确认界面变化、写剪贴板后验内容
+- **失败重试**：幂等操作失败自动重试（1s/2s/4s 退避，最多 3 次），高危操作不自动重试
+- **防呆**：单任务最多 10 轮（`MAX_TURNS`）；`wait` 单次上限 60 秒且睡眠中可响应停止
 
 ## 快速开始
 
-### 安装依赖
+### 路线 A：云端模型（最快，不用装本地模型）
+
+1. 到 [Releases 页面](https://github.com/lzy931102/desktop-agent/releases/latest) 下载 `DesktopAgent.exe`，双击运行（首次启动解压约 10 秒）
+2. 首启引导卡选「**用云端**」→ 自动打开设置面板
+3. 在「云端模型」页签选「智谱」（免费模型 `glm-4-flash`），到 [open.bigmodel.cn](https://open.bigmodel.cn) 注册并创建 API Key，填进去
+4. 点「测试连接」确认通过 → 保存
+5. 回主界面输入 `打开计算器`，点「开始执行」
+
+> 注意：云端模式下，屏幕截图会上传给模型服务商（界面底部有常驻黄条提醒）。
+> 不希望截图出本机就用路线 B。
+
+### 路线 B：本机 Ollama（数据不出本机）
+
+1. 下载安装 Ollama：https://ollama.com/download ，装好后右下角出现羊驼图标
+2. 拉模型：`ollama pull qwen2.5-coder:7b`
+3. 运行 `DesktopAgent.exe`，顶栏徽章变绿即连上
+4. 输入任务开始使用
+
+### 源码运行（开发者）
 
 ```bash
 pip install -r requirements.txt
-```
-
-额外依赖（可选）：
-
-```bash
-pip install mss pytesseract pyperclip pywin32 uiautomation
-```
-
-### 运行测试
-
-```bash
-# 移动靶测试
-python test_moving_target.py
-
-# 记事本 E2E
-python test_notepad_e2e.py
-
-# 计算器 E2E
-python test_calculator_e2e.py
-
-# 浏览器 E2E
-python test_browser_e2e.py
-```
-
-## 下载与安装
-
-### 下载
-
-1. 打开 [Releases 页面](https://github.com/lzy931102/desktop-agent/releases/latest)
-2. 找到最新版本（如 v2.0.1）
-3. 在 "Assets" 区域，点击 `DesktopAgent.exe` 下载
-4. 下载完成后，双击运行
-
-> 💡 如果点击下载链接后页面空白，是正常的——文件会自动下载，去浏览器"下载"列表查看。
-
-### 安装 Ollama
-
-1. 下载 Ollama：https://ollama.com/download
-2. 安装并启动
-3. 拉取模型：ollama pull qwen2.5-coder:7b
-
-### 运行
-
-双击 `DesktopAgent.exe`，输入任务，点击"开始执行"。
-
-## GUI 使用
-
-### 启动 GUI
-
-```bash
 python gui.py
 ```
 
-双击 `dist/DesktopAgent.exe` 亦可。
+## GUI 使用
 
-### 界面说明（多任务并行版）
-
-- **左侧栏**：＋ 新建任务、任务列表（状态/轮次实时刷新，右键可重命名/关闭）、任务表、设置、插件（技能/专家/连接器）
-- **Tab 栏**：每个任务一个 Tab，最多可并行执行（默认 3 个，设置里可调 1-5），超出自动排队
-- **对话流**：用户/助手气泡、工具调用卡片（参数 → 执行中 → 成功/失败/拦截）、
-  高危操作内嵌确认卡、截屏缩略图（点击放大）
-- **输入区**：示例任务一键填入、Ctrl+Enter 开始、右下角显示轮次/耗时/Token 用量
-- **连接徽章**：右上角实时显示「当前是云端还是 Ollama、连没连上」，
-  后面跟着「看屏幕」走的是云端还是本机（如 `● 云端已连接 · 看屏 云端 · glm-4v-flash`）
+- **左侧栏**：＋ 新建任务、任务列表（状态实时刷新，可重命名/关闭）、任务表、设置、插件（技能/专家/连接器）
+- **Tab 栏**：每任务一个 Tab，并行数设置里可调（1-5，默认 3），超出排队
+- **对话流**：用户/助手气泡、工具调用卡片、高危操作内嵌确认卡、截屏缩略图（点击放大）
+- **输入区**：示例任务一键填入（打开计算器 / 打开记事本，输入 你好 / 截取屏幕 / 查看窗口）、Ctrl+Enter 开始、右下角显示轮次/耗时
+- **连接徽章**：右上角显示当前用云端还是 Ollama、连没连上，点击可再次唤出首启引导
 
 ### 顶栏功能
 
 | 按钮 | 功能 |
 |------|------|
-| 📜 历史 | 回看最近 50 次任务（状态/耗时/结果） |
-| ⏰ 定时 | 定时任务：每天 / 每周 / 间隔分钟，到点自动执行，持久化不丢失 |
-| 📋 任务表 | 本会话 + 历史记录的表格视图（状态/轮次/耗时/结果） |
-| ⚙ 设置 | 切换本地模型、并行任务数（1-5）、托盘开关 |
+| 📜 历史 | 回看最近 50 次任务（`core/history.py`） |
+| ⏰ 定时 | 定时任务：每天 / 每周 / 间隔分钟，持久化不丢失 |
+| 📋 任务表 | 本会话 + 历史记录的表格视图 |
+| ⚙ 设置 | 模型模式（本机/云端/自动）、并行任务数、托盘开关、云端服务商与 Key、视觉模型 |
 
-### 安全机制
+### 命令行（进阶）
 
-- **高危操作确认**：删除类按键、关闭窗口组合键、破坏性按钮等操作会先弹窗征求同意
-- **审计日志**：所有工具调用与审批记录写入 `%LOCALAPPDATA%\DesktopAgent\logs\`（哈希链防篡改）
-- **失败重试**：幂等操作失败自动重试（1s/2s/4s 退避），高危操作失败不自动重试
-- **动作后校验**：打开应用后确认窗口出现、点击后确认界面变化
-- **托盘驻留**：关闭窗口最小化到托盘，后台定时任务继续运行
+```bash
+python gui.py --run "打开计算器"          # 启动后自动执行任务
+python gui.py --debug-open settings       # 直接打开面板：settings / scheduler / history / tasks_table
+```
 
-### 示例任务
+## 数据存放位置
 
-- 打开计算器
-- 打开记事本，输入 Hello
-- 看看屏幕上现在有哪些应用窗口
-- 在记事本里用格式菜单打开字体设置
+全部在 `%LOCALAPPDATA%\DesktopAgent\`，不随仓库走：
 
-### 打包 exe
+| 内容 | 路径 |
+|------|------|
+| 审计日志（哈希链） | `logs\audit-YYYYMMDD.jsonl` |
+| 任务历史 | `history.jsonl` |
+| 设置（含模型配置，Key 优先读环境变量） | `settings.json` |
+| 定时任务 | `scheduled_tasks.json` |
+| 插件 / 技能包 | `plugins\` 、`skills\` |
+
+## 测试
+
+```bash
+# 核心套件（guard 审批 / 插件边界 / 技能包 / agent 循环 / 视觉后端 / core）：
+python -m pytest test_core_guard.py test_plugin_system.py test_plugin_boundary.py \
+       test_skill_system.py test_agent_loop_guard.py test_vision_backend.py -q
+# 实测：213 passed, 7 xfailed（7 个 xfailed 是 guard 已拍板不修的绕过变体，
+# 用 xfail 固化防回归，理由见 test_core_guard.py 各用例 docstring）
+
+# 全量逻辑测试（含 test_ollama_stream.py 的假响应流测试，不依赖真实 Ollama、不动鼠标）：
+python -m pytest -q
+# 实测：224 passed, 7 xfailed
+```
+
+`e2e/` 下的 21 个脚本是**会真动鼠标、真开应用**的一次性桌面操控/端到端脚本，
+pytest 配置（`pytest.ini`）已确保裸跑 `pytest` 绝不收集它们；需要跑时单独执行：
+
+```bash
+python -m e2e.test_notepad_e2e
+```
+
+## 打包 exe
 
 ```bash
 python -m PyInstaller DesktopAgent.spec --noconfirm
 ```
 
-打包后生成：`dist/DesktopAgent.exe`
+生成 `dist/DesktopAgent.exe`。spec 里 `upx=False`：未签名 exe + UPX 壳是杀软误报的经典组合，体积换查杀通过率。
 
-## 测试结果
+## 技术栈（主链路实测）
 
-| 编号 | 测试项 | 结果 |
-|------|--------|------|
-| T1 | 移动靶预判 | ✅ |
-| T2 | 多靶子决策 | ✅ 100% |
-| T3 | 弹窗干扰 | ✅ 10/10 |
-| T4 | 分辨率变化 | ✅ 6/6 |
-| T5 | 记事本 E2E | ✅ |
-| T6 | 计算器 E2E | ✅ |
-| T7 | 浏览器 E2E | ✅ |
-| T8 | 连续 10 局稳定性 | ✅ |
-| T9 | 异常恢复 | ✅ 4/4 |
-| T10 | 安全拦截 | ✅ 14/14 |
-| T11 | 任务链 | ✅ 11/11 |
-| P2-1 | Excel（WPS） | ✅ 7.89s |
-| P2-2 | Word（WPS） | ✅ 11.29s |
-| P2-3 | PPT（WPS） | ✅ 9.28s |
-| P2-1 | Excel（WPS） | ✅ 4.37s |
-| P2-2 | Word（WPS） | ✅ 4.64s |
-| P2-3 | PPT（WPS） | ✅ 6.41s |
-| P3 | 文件夹操作 | ✅ 24.95s |
-| P4 | AI 决策（LM Studio） | ✅ 18.56s |
-| P7 | 批量文件（GUI） | ✅ 15.82s |
-| P8 | 多模态升级 | ✅ 4/4 |
+| 组件 | 技术 |
+|------|------|
+| 界面 | CustomTkinter（`gui.py`） |
+| Agent 循环 | 自研（`agent_loop.py`）：LLM 循环 + 工具调度 + 审计/审批/重试接线 |
+| LLM 接入 | `requests` 直连——本机 Ollama REST（`localhost:11434`）+ 云端 OpenAI 兼容接口（智谱等四家预设） |
+| 看屏幕 | 截图缩放 1600 宽 → 云端 `glm-4v-flash`（免费）或本机 Ollama `qwen-vl`（`agent_vision.py`） |
+| UI 自动化 | `pyautogui`（鼠标键盘/截屏）+ `pywinauto`（UIA 控件，懒加载） |
+| 剪贴板 | `pyperclip` |
+| 系统托盘 | `pystray`（懒加载，缺失自动降级） |
+| 打包 | PyInstaller（`DesktopAgent.spec`，含 pywinauto/comtypes 整体收集） |
 
-## 技术栈
-
-| 组件 | 技术选择 |
-|------|----------|
-| 截屏 | mss |
-| OCR | Tesseract |
-| 图像处理 | OpenCV |
-| 看屏幕（视觉） | 云端 glm-4v-flash（默认）/ 本机 qwen-vl |
-| 图像定位 | pyautogui.locateOnScreen |
-| 鼠标控制 | ctypes |
-| 键盘模拟 | pyautogui |
-| 剪贴板 | pyperclip |
-| COM 自动化 | pywin32 |
-| UI 自动化 | uiautomation |
+> `requirements.txt` 里的 `openai`、`opencv-python` 为早期遗留依赖，当前主链路未 import；
+> 待后续任务清理。`segno`（二维码）服务于 `phone_bridge/`。
 
 ## 项目结构
 
 ```
 desktop-agent/
-├── gui.py                    # 图形界面（多任务并行：侧栏+Tab+对话流+任务表）
-├── agent_loop.py             # agent 主干（LLM 循环、工具调度）
-├── agent_vision.py           # 工具包：视觉/窗口/UIA/剪贴板
-├── core/                     # 基础设施：audit/guard/approval/history/scheduler/settings
-├── plugin_system/            # 连接器：.py 工具插件（加载、启停、工具合并）
-├── skill_system/             # 技能/专家包：SKILL.md 注入 + install_skill 工具
-├── examples/                 # 示例插件（示例插件-天气查询.py）
-├── test_*.py                 # 测试文件
-├── test_plugin_system.py     # 插件系统独立测试（不 import agent_loop/gui）
-├── test_skill_system.py      # 技能包系统独立测试（含 agent_loop 接入测试）
-├── test_plugin_boundary.py   # 插件与内置工具清单一致性测试
-├── requirements.txt          # 依赖
-├── LICENSE                   # MIT License
-└── README.md                 # 项目说明
+├── gui.py                # 图形界面（侧栏 + Tab + 对话流 + 任务表 + 托盘 + 首启引导）
+├── agent_loop.py         # Agent 主干：LLM 循环、21 个内置工具 + install_skill 调度、审计/审批/重试/停止接线
+├── agent_vision.py       # 工具包：截屏/视觉理解/窗口/UIA/剪贴板（本地 + 云端双路径）
+├── core/                 # 基础设施：audit(哈希链)/guard/approval/retry/verify/scheduler/history/settings/paths/feishu
+├── plugin_system/        # 连接器：.py 工具插件（加载、启停、工具合并）
+├── skill_system/         # 技能/专家包：SKILL.md 注入（防注入包裹）+ install_skill（走确认卡）
+├── phone_bridge/         # 手机桥接（令牌 + 限速 + 隧道 watchdog + 二维码）——已开发，未接线
+├── e2e/                  # 桌面操控/端到端脚本（真动鼠标，pytest 不收集）
+├── test_*.py             # 核心测试套件（6 文件）+ test_ollama_stream.py
+├── docs/                 # 评审/评估报告、修复任务列表、插件与技能包指南
+├── examples/             # 示例插件（示例插件-天气查询.py）
+├── DesktopAgent.spec     # PyInstaller 打包配置
+└── requirements.txt      # 依赖（>= 下限声明）
 ```
-
-## 参考项目
-
-- [Self-Operating Computer](https://github.com/OpenAdenAI/self-operating-computer)
-- [je-auto-control](https://github.com/jeauto-control/je-auto-control)
-- [OpenWorker](https://github.com/OpenWorkerAI/OpenWorker)
-- [GhostDesk](https://github.com/GhostDesk/GhostDesk)
-- [ScreenAgent](https://github.com/niuzaishen/ScreenAgent)
 
 ## 插件开发
 
