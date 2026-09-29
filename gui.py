@@ -24,6 +24,7 @@ from agent_loop import (DesktopAgent, LLMClient, LLMConfig, LLMProvider,
 from core.approval import GuiApprovalBridge
 from core.audit import AuditLogger
 from core.history import TaskHistory
+from core.retry import is_failed_result
 from core.scheduler import Scheduler
 from core.settings import (CLOUD_PRESETS, PROVIDER_ENUM, VISION_MODEL_OPTIONS,
                            Settings, resolve_api_key)
@@ -1144,7 +1145,9 @@ class AgentGUI:
                 if self.active is s:
                     self.chat.append(ev)
             return
-        ok = not text.startswith("错误")
+        # 与重试层（core/retry.run_with_retry）同一判定："failed to connect"
+        # 这类不带"错误"前缀的失败也必须在这里判负，不能界面打 ✓ 重试层判败
+        ok = not is_failed_result(text)
         s.current_action = ("✓ 工具执行完成，继续下一步…" if ok
                             else f"✗ 工具 {name} 出了问题")
         self._log_line(s, ("✓ " if ok else "✗ ") + f"{name} 完成，结果："

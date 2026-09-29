@@ -11,6 +11,7 @@ DesktopAgent._run_loop，验证三条分级路径互不等价：
 修复前行为：agent_loop 只处理 risk == "high"，medium 与 none 完全等价
 （无审计事件、无提示，静默执行）。
 """
+import hashlib
 import json
 import time
 from pathlib import Path
@@ -195,3 +196,81 @@ def test_execute_tool_wait_honors_agent_stop_flag():
     result = agent._execute_tool("wait", {"seconds": 100000}, "none")
     assert time.monotonic() - start < 2
     assert "停止" in result
+
+
+# ============ 审计哈希链续链 + 界面失败判定收敛（REL-P1-1 / REL-P1-2） ============
+
+def _chain_verified(entries):
+    """全链校验：seq 递增无重复、prev 逐条相接、每条哈希可复算。"""
+    prev = ""
+    seqs = []
+    for e in entries:
+        assert e["prev"] == prev
+        check = {k: v for k, v in e.items() if k != "hash"}
+        digest = hashlib.sha256(json.dumps(
+            check, sort_keys=True, ensure_ascii=False).encode("utf-8")
+        ).hexdigest()[:16]
+        assert digest == e["hash"]
+        prev = e["hash"]
+        seqs.append(e["seq"])
+    assert seqs == sorted(set(seqs))   # 递增且无重复
+    return seqs
+
+
+def test_audit_chain_resumes_after_same_day_restart(tmp_path):
+    """同日重启续链（REL-P1-1）：写两条 → 重建实例 → 再写一条，全文件
+    哈希链校验通过、seq 递增无重复；文件尾损坏时照常续链，但新条目带
+    chain_repaired 标记（不静默）。
+    修复前：重建实例从 seq=0/prev="" 起链——同日重启后 seq 重复、链断裂，
+    防篡改无法区分"重启"与"篡改"。"""
+    a = AuditLogger(log_dir=tmp_path)
+    a.emit("task_start", task="任务A")
+    a.emit("tool_call", tool="click")
+    a.close()
+
+    b = AuditLogger(log_dir=tmp_path)   # 重建实例，模拟同日重启
+    b.emit("tool_result", tool="click", result="ok")
+    b.close()
+
+    entries = _read_audit(tmp_path)
+    assert len(entries) == 3
+    assert _chain_verified(entries) == [0, 1, 2]      # 修复前：0,1,0
+
+    # 文件尾损坏（篡改行，不带换行尾——即崩溃半行的形态）：原样留在文件，
+    # 从最后一条可验证记录续链，下一条如实标记 chain_repaired
+    day_file = tmp_path / f"audit-{time.strftime('%Y%m%d')}.jsonl"
+    with open(day_file, "a", encoding="utf-8") as f:
+        f.write('{"ts": "tampered", "type": "tool_call", "seq": 99}')
+    c = AuditLogger(log_dir=tmp_path)
+    c.emit("approval", tool="del")
+    c.close()
+
+    good = [json.loads(l) for l in day_file.read_text(
+        encoding="utf-8").splitlines() if l.strip() and "hash" in json.loads(l)]
+    assert len(good) == 4
+    assert _chain_verified(good) == [0, 1, 2, 3]      # 损坏行不占用 seq
+    assert all("chain_repaired" not in e for e in good[:3])
+    assert good[-1]["chain_repaired"] is True
+
+
+def test_gui_tool_result_judgement_uses_is_failed_result():
+    """界面侧失败判定与重试层同源（REL-P1-2）："failed to connect" 不带
+    "错误" 前缀，修复前 startswith("错误") 判定漏放——界面打 ✓、重试层
+    （is_failed_result）判失败，两套语义；收敛后界面必须同样判负。"""
+    from gui import AgentGUI, TaskSession
+
+    app = AgentGUI.__new__(AgentGUI)   # 绕过 __init__：不建 Tk 窗口，只测状态逻辑
+    app.active = None                  # 非当前 Tab → 不触碰 chat 控件
+    app._log_line = lambda *a, **k: None
+
+    def _apply(result):
+        s = TaskSession("判定回归")
+        ev = s.add("tool", name="open_app", args={}, state="run",
+                   result="", note="", img=None)
+        AgentGUI._apply_tool_result(app, s, "open_app", {}, result)
+        return ev
+
+    # 文档点名的形态：不带"错误"前缀的失败（修复前在这里打 ✓）
+    assert _apply("无法连接模型服务: failed to connect to Ollama")["state"] == "err"
+    assert _apply("错误: 未知工具 foo")["state"] == "err"   # 传统前缀形态仍判负
+    assert _apply("已打开 记事本")["state"] == "ok"          # 正常结果不误伤
