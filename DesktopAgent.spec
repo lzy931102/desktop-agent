@@ -6,6 +6,9 @@ from PyInstaller.utils.hooks import collect_all
 pw_datas, pw_binaries, pw_hidden = collect_all('pywinauto')
 ct_datas, ct_binaries, ct_hidden = collect_all('comtypes')
 
+# 注意：phone_bridge/ 已开发未接线（docs/修复任务列表-2026-09-29.md 任务 16），
+# 接线后需补打包项（hiddenimports/datas），并核对 pystray/segno 等依赖的收集。
+
 a = Analysis(
     ['gui.py'],
     pathex=[],
@@ -33,7 +36,7 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    upx=False,  # 未签名 exe + UPX 壳是杀软误报经典组合，体积换查杀通过率
     upx_exclude=[],
     runtime_tmpdir=None,
     console=False,

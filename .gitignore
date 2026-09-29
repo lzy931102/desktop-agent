@@ -51,9 +51,6 @@ wps_screenshot.png
 # 须放在上面的 !**/__init__.py 之后，否则其内部的 __init__.py 会被重新放行
 agent/
 
-# 归档目录
-archive/
-
 # PyInstaller 打包产物
 build/
 build_new/
@@ -64,4 +61,3 @@ DesktopAgent.exe
 
 # 云端凭据相关（防误提交）
 settings.json
-*.jsonl

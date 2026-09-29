@@ -1,4 +1,4 @@
-"""core/guard + core/approval 安全层回归测试（pytest）。
+"""core/guard + core/approval + core/scheduler 回归测试（pytest）。
 
 替代 v1 T10 的场景覆盖思路（拦截 / 放行 / 绕过尝试），
 断言目标是现行 API，不依赖 v1 的 SecurityModule 接口。
@@ -34,6 +34,7 @@ import pytest
 
 from core import guard
 from core.approval import AutoDenyPolicy, GuiApprovalBridge
+from core.scheduler import Scheduler
 
 
 # ==================== 高危操作：必须拦截 ====================
@@ -486,3 +487,70 @@ def test_auto_deny_policy_blocks_everything():
     policy = AutoDenyPolicy()
     assert policy.decide("open_app", {"app_name": "calc"}, "none", "") is False
     assert policy.decide("press_key", {"key": "delete"}, "high", "r") is False
+
+
+# ==================== core/scheduler：去重集合不增长 + 错过提示 ====================
+# （修复任务列表任务 13：_fired_this_minute 只增不减的泄漏 + daily 错过无提示）
+
+def _mk_sched(tmp_path, on_due, on_missed=None):
+    return Scheduler(on_due=on_due, file_path=tmp_path / "scheduled_tasks.json",
+                     on_missed=on_missed)
+
+
+def _ts(*args):
+    return time.mktime(args + (0, 0, -1))
+
+
+def test_scheduler_fired_set_does_not_grow_across_minutes(tmp_path):
+    """换分钟后去重集合清空重填：跨天常驻也不再随分钟数无限增长。"""
+    fired = []
+    s = _mk_sched(tmp_path, fired.append)
+    s.add("说话", "interval", interval_minutes=1)
+    t0 = _ts(2026, 1, 5, 9, 0, 0)
+    for i in range(3):
+        s.check_due(now=t0 + i * 60)
+        assert len(s._fired_this_minute) <= 1
+    assert len(fired) == 3  # 清理不误伤：每分钟照常触发
+
+
+def test_scheduler_same_minute_dedup_intact(tmp_path):
+    """同一分钟内多轮 check_due（15 秒一轮的语义）仍只触发一次。"""
+    fired = []
+    s = _mk_sched(tmp_path, fired.append)
+    s.add("说话", "interval", interval_minutes=1)
+    t0 = _ts(2026, 1, 5, 9, 0, 0)
+    s.check_due(now=t0)
+    s.check_due(now=t0 + 10)
+    s.check_due(now=t0 + 20)
+    assert len(fired) == 1
+
+
+def test_scheduler_missed_daily_notified_once_not_caught_up(tmp_path):
+    """错过当天时刻的 daily：提示一次、不补跑、不动 last_run，次日照常触发。"""
+    fired, missed_seen = [], []
+    s = _mk_sched(tmp_path, fired.append, on_missed=missed_seen.append)
+    s.add("晨报", "daily", "09:00")
+    late = _ts(2026, 1, 5, 10, 5, 0)  # 09:00 已过才启动
+    s.check_due(now=late)
+    assert not fired                     # 不自动补跑
+    assert len(missed_seen) == 1
+    rec = s.load()[0]
+    assert rec["last_status"] == "missed"
+    assert rec["last_run"] == 0          # 错过不算跑过，明天判定不受影响
+    s.check_due(now=late + 60)           # 同一天再查：不重复提示
+    assert len(missed_seen) == 1
+    s.check_due(now=_ts(2026, 1, 6, 9, 0, 0))
+    assert len(fired) == 1               # 次日到点正常触发
+    assert s.load()[0]["last_status"] == "triggered"
+
+
+def test_scheduler_daily_before_time_not_missed(tmp_path):
+    """时刻未到不算错过；时刻字段缺失/异常的 daily 不误报。"""
+    missed_seen = []
+    s = _mk_sched(tmp_path, lambda t: None, on_missed=missed_seen.append)
+    s.add("晨报", "daily", "09:00")
+    s.add("坏时间", "daily", "")
+    s.check_due(now=_ts(2026, 1, 5, 8, 55, 0))
+    assert not missed_seen
+    statuses = {t["task"]: t["last_status"] for t in s.load()}
+    assert statuses == {"晨报": "", "坏时间": ""}

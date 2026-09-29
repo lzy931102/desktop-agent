@@ -658,7 +658,8 @@ class AgentGUI:
         self.audit = AuditLogger()
         self.history = TaskHistory()
         self.settings = Settings()
-        self.scheduler = Scheduler(on_due=self._on_scheduled_task)
+        self.scheduler = Scheduler(on_due=self._on_scheduled_task,
+                                   on_missed=self._on_missed_scheduled_task)
         self.scheduler.start()
         self.tray = None
 
@@ -1565,6 +1566,21 @@ class AgentGUI:
         """定时任务到点：总是新建任务（满了自动排队，不再因忙碌跳过）"""
         task = sched_task.get("task", "")
         self.root.after(0, lambda: self._run_scheduled(task))
+
+    def _on_missed_scheduled_task(self, sched_task: dict):
+        """错过的定时任务只提示不补跑（scheduler 已保证每天最多回调一次）"""
+        desc = Scheduler.describe(sched_task)
+        task = sched_task.get("task", "")
+        self.root.after(0, lambda: self._notice_missed_scheduled(desc, task))
+
+    def _notice_missed_scheduled(self, desc, task):
+        s = self.active
+        if s:
+            s.add("system",
+                  text=f"⏰ {desc}的定时任务今天已错过：{task}（不补跑，明天照常）",
+                  tone="info")
+            if self.active is s:
+                self.chat.append(s.events[-1])
 
     def _run_scheduled(self, task):
         s = TaskSession(title=short_title(task))
