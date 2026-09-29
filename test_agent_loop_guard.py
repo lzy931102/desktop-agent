@@ -451,7 +451,8 @@ def test_all_network_call_points_disable_trust_env():
                                     f"{rel}:{stmt.lineno} with requests.Session 体内首行未设 trust_env=False")
 
     # 扫描面自检：已知网络出口文件必须在内、合规出口必须够数（防扫描路径写错静默通过）
-    for must in ("agent_loop.py", "agent_vision.py", "ai_brain.py",
+    # （ai_brain.py 为遗留模块，已于任务 14 清理删除，不再在扫描面内）
+    for must in ("agent_loop.py", "agent_vision.py",
                  "core/feishu.py", "skill_system/manager.py"):
         assert must in scanned, f"策略扫描漏掉了 {must}"
     assert configured >= 5, f"合规 Session 出口仅 {configured} 处，扫描可能失效"
