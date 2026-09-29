@@ -213,7 +213,12 @@ def humanize_error(error_msg: str) -> str:
     for error_key, human_msg in error_translations.items():
         if error_key in error_msg:
             return human_msg
-    return f"发生错误：{error_msg}"
+    # 未命中翻译表的兜底（UX-P1-9）：异常原文常带 NoneType/KeyError 这类类名
+    # 和技术细节，对非技术用户是天书。改成"发生了什么 + 能做什么"；原文打到
+    # 控制台备查（源码运行可看，打包版无控制台——原文本也无补于用户自救）
+    print(f"[unhandled-error] {error_msg}")
+    return ("出了点问题，这一步没能完成。可以重试一次，或把任务拆得更简单些；"
+            "反复出现的话请重启程序再试")
 
 
 def parse_log(m: str):
@@ -987,12 +992,16 @@ class AgentGUI:
                 self.chat.append(s.events[-1])
             return
 
-        # 覆盖旧会话重跑：清空上一轮的事件流
+        # 覆盖旧会话重跑：清空上一轮的事件流。清空后先补一条说明，别让用户
+        # 对着空对话流以为上一轮记录丢了（render_all 按 events 重建，会渲染它）
         if s.status in ("done", "failed", "stopped"):
+            had_history = bool(s.events)
             s.events.clear()
             s.start_time = None
             s.elapsed = None
             s.turn = 0
+            if had_history:
+                s.add("system", text="已开始新一轮，上一轮记录已收起", tone="faint")
         s.task_text = task
         s.title = short_title(task)
         s.draft = ""
@@ -2157,7 +2166,11 @@ class AgentGUI:
                         local_hint.configure(text=f"共 {len(models)} 个本地模型可用")
                     else:
                         local_hint.configure(
-                            text="读不到模型列表，请确认 Ollama 正在运行")
+                            text="读不到模型列表：本机 Ollama 没连上。请先启动 Ollama"
+                                 "（任务栏右下角有它的图标才算在运行），关掉设置窗口重新"
+                                 "打开即可刷新；不想装本机模型，也可以在下方「云端模型」"
+                                 "填 API Key",
+                            wraplength=560)
                 self.root.after(0, done)
             threading.Thread(target=work, daemon=True).start()
 
@@ -2481,12 +2494,19 @@ class AgentGUI:
                                      [c.destroy() for c in d.winfo_children()],
                                      self._render_sched_list(d))).pack(
                 side="left", padx=2)
+            def remove_one(tid=t["id"], d=parent, task_text=t["task"]):
+                # 二次确认（对齐删技能包）：删除不可恢复，防手滑
+                if messagebox.askyesno(
+                        "删除确认",
+                        f"确定删除这条定时任务吗？\n「{task_text[:30]}」删了得重新添加",
+                        parent=d):
+                    self.scheduler.remove(tid)
+                    [c.destroy() for c in d.winfo_children()]
+                    self._render_sched_list(d)
+
             ctk.CTkButton(btns, text="删除", width=48, height=22, corner_radius=6,
                           fg_color="#DC2626", hover_color="#B91C1C", text_color=TEXT,
-                          command=lambda tid=t["id"], d=parent: (
-                              self.scheduler.remove(tid),
-                              [c.destroy() for c in d.winfo_children()],
-                              self._render_sched_list(d))).pack(side="left", padx=2)
+                          command=remove_one).pack(side="left", padx=2)
 
 
 if __name__ == "__main__":

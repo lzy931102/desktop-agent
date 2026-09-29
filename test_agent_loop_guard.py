@@ -105,6 +105,24 @@ def test_medium_executes_with_audit_and_hint(env):
     assert "敏感词" in medium[0]["reason"]
 
 
+def test_medium_hint_deduped_but_audit_every_time(env):
+    """降噪（UX-P1-8）：同一来源一次会话只提示首次；审计每次照记、执行不衰减。
+    修复前：每次 medium 调用都刷一行"[敏感操作] …已放行"。"""
+    agent, stub, logs, tmp_path = env
+    result = _run(agent, [
+        _tool_call("c1", "clipboard_write", {"text": "password one"}),
+        _tool_call("c2", "clipboard_write", {"text": "password two"}),
+        _final(),
+    ])
+    assert result == "任务完成"
+    assert len(stub.calls) == 2                     # 降噪只作用于提示行，不拦执行
+    hints = [m for m in logs if "[敏感操作]" in m and "clipboard_write" in m]
+    assert len(hints) == 1                          # 同一工具只提示首次
+    entries = _read_audit(tmp_path)
+    medium = [e for e in entries if e["type"] == "medium_risk"]
+    assert len(medium) == 2                         # 审计不受降噪影响
+
+
 def test_none_stays_silent(env):
     """对照组：none（无敏感词）不产生 medium_risk 事件、无提示行。"""
     agent, stub, logs, tmp_path = env

@@ -764,8 +764,11 @@ def _open_app(app_name: str):
     }
     exe = app_map.get(app_name.strip()) or app_map.get(app_name.strip().lower())
     if not exe:
-        return ("错误: 仅支持打开以下应用: 记事本(notepad)、计算器(calc)、命令行(cmd)、"
-                "资源管理器(explorer)、画图(paint)、控制面板、任务管理器。请改用这些名称")
+        return ("错误: 仅支持直接打开: 记事本(notepad)、计算器(calc)、命令行(cmd)、"
+                "资源管理器(explorer)、画图(paint)、控制面板、任务管理器。"
+                "清单外的应用可以从开始菜单找：press_key(key=\"win\") 打开开始菜单，"
+                "type_text 输入应用名，press_key(key=\"enter\") 确认；"
+                "并告诉用户：清单外的应用说\"帮我打开 xxx\"，我会从开始菜单找")
     os.startfile(exe)  # ShellExecute 启动，exe 只能是上面白名单中的常量
     time.sleep(2)
     return f"opened {app_name}"
@@ -930,6 +933,7 @@ class DesktopAgent:
         self._image_located = False   # locate_on_screen 是否成功（供旧逻辑兼容）
         self._last_locate_failed = False  # 上一次 locate_on_screen 失败 → 拦截下一次盲点击
         self._stop_requested = False  # 用户请求停止
+        self._medium_notified = set()  # medium 风险已提示过的来源（插件名/工具名），一次会话只提示首次
         self.on_tool_call = None      # 回调：工具调用前
         self.on_tool_result = None    # 回调：工具调用后
         self.on_log = None            # 回调：通用日志
@@ -1175,10 +1179,17 @@ class DesktopAgent:
 
                 elif risk == "medium":
                     # medium 分级：不拦截，但与 none 的静默放行区分开——
-                    # 记一条专属审计事件（进哈希链）+ 界面提示行，操作照常执行
+                    # 记一条专属审计事件（进哈希链）+ 界面提示行，操作照常执行。
+                    # 界面行降噪（UX-P1-8）：同一来源（插件名，无插件归属则工具名）
+                    # 一次会话只提示首次，重复调用不再刷屏；审计每次照记
                     if self.auditor:
                         self.auditor.emit("medium_risk", tool=name, reason=reason)
-                    self._log(f"[敏感操作] {name}：{reason}（已放行并记入审计）")
+                    ptool = next((t for t in self._plugin_tools
+                                  if t.name == name), None)
+                    source = ptool.plugin_name if ptool else name
+                    if source not in self._medium_notified:
+                        self._medium_notified.add(source)
+                        self._log(f"[敏感操作] {name}：{reason}（已放行并记入审计）")
 
                 if self.on_tool_call:
                     self.on_tool_call(name, args)
