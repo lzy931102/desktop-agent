@@ -39,6 +39,9 @@ DEFAULTS = {
     "minimize_to_tray": True,
     "feishu_webhook": "",  # 飞书群自定义机器人 Webhook（电脑↔手机消息通道）
     "plugins": {"disabled": []},  # 停用的插件文件名（不含 .py）；停用的插件不加载不执行
+    # 首启引导（UX-P1-6）：""=未引导；"cloud"/"local"=已选路线，不再自动弹；
+    # "later"=下次启动仍未连上时再提醒一次；"dismissed"=不再自动弹（徽章仍可唤出）
+    "onboarding_choice": "",
 }
 
 # 云端服务商预设与对应的环境变量名
@@ -80,6 +83,31 @@ def resolve_api_key(cloud_cfg: dict) -> tuple:
     if env_name and os.environ.get(env_name):
         return os.environ[env_name], "env"
     return "", ""
+
+
+# ---- 首启引导判定（UX-P1-6）：纯逻辑放 core，脱离 GUI 可回归 ----
+ONBOARDING_AUTO_STATES = ("", "later")  # 仅这两种状态允许自动弹出
+
+
+def cloud_ready(settings) -> bool:
+    """云端路径是否已配置好（settings 里存了 Key，或对应环境变量有值）"""
+    try:
+        key, _ = resolve_api_key(dict(settings.get("cloud", {}) or {}))
+    except Exception:
+        return False
+    return bool(str(key or "").strip())
+
+
+def should_show_onboarding(settings, connected: bool) -> bool:
+    """是否自动弹首启引导卡：没连上 + 云端路径没配好 + 处于可自动弹状态。
+
+    已配好任一模型路径的老用户（云端 Key 就绪）不弹；本地用户 Ollama 正常
+    运行时 connected=True 不弹；"later" 只再提醒一次——GUI 弹出前会把状态
+    推进为 "dismissed"，这次再关掉就不会有下一次。
+    """
+    if connected or cloud_ready(settings):
+        return False
+    return str(settings.get("onboarding_choice", "") or "") in ONBOARDING_AUTO_STATES
 
 
 def validate_public_https(url: str) -> tuple:

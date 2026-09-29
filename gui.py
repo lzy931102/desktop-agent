@@ -15,6 +15,7 @@ import re
 import sys
 import threading
 import time
+import webbrowser
 import customtkinter as ctk
 import agent_vision
 import tkinter as tk
@@ -27,7 +28,7 @@ from core.history import TaskHistory
 from core.retry import is_failed_result
 from core.scheduler import Scheduler
 from core.settings import (CLOUD_PRESETS, PROVIDER_ENUM, VISION_MODEL_OPTIONS,
-                           Settings, resolve_api_key)
+                           Settings, resolve_api_key, should_show_onboarding)
 
 try:
     from plugin_system import PluginManager
@@ -63,6 +64,9 @@ OLLAMA_URL = "http://localhost:11434"
 MODEL_NAME = "qwen2.5-coder:7b"
 MAX_TURNS = 10
 DEFAULT_MAX_CONCURRENT = 3
+# 首启引导（UX-P1-6）：本地路线的官方下载直链 / 云端配置图文教程
+OLLAMA_DOWNLOAD_URL = "https://ollama.com/download"
+CLOUD_TUTORIAL_URL = "https://github.com/lzy931102/desktop-agent#readme"
 
 # ---------------- 配色（gray-900 体系 · 对话流补充色 · WCAG AA） ----------------
 BG = "#111827"            # 主背景（gray-900）
@@ -656,6 +660,7 @@ class AgentGUI:
         self.sessions = {}          # id → TaskSession（插入序 = 创建序）
         self.active = None
         self.ollama_ok = None       # None=检测中
+        self._onboarding_auto_shown = False  # 本次运行只自动弹一次引导卡
         self._sidebar_dirty = True
         self._tabs_dirty = True
 
@@ -679,6 +684,9 @@ class AgentGUI:
         self.conn_label = ctk.CTkLabel(bar, text="○ 正在连接本地 Ollama…",
                                        font=ctk.CTkFont(size=12), text_color=MUTED)
         self.conn_label.pack(side="right")
+        # 徽章可点：随时唤出首启引导卡（换路线 / 装好 Ollama 后重新检测）
+        self.conn_label.configure(cursor="hand2")
+        self.conn_label.bind("<Button-1>", lambda e: self._show_onboarding())
         for text, cmd in (("📜 历史", self._show_history),
                           ("⏰ 定时", self._show_scheduler)):
             ctk.CTkButton(bar, text=text, width=64, height=24, corner_radius=6,
@@ -1377,7 +1385,7 @@ class AgentGUI:
             w.bind("<Button-3>", popup)
 
     # ================= 连接检测 =================
-    def _check_connection(self):
+    def _check_connection(self, extra_done=None):
         mode = self.settings.get("model_mode", "local")
         where = {"cloud": "云端", "auto": "自动切换"}.get(mode, "Ollama")
         try:
@@ -1392,10 +1400,150 @@ class AgentGUI:
         else:
             text = f"○ {where}未连接（{info}）"
         self.root.after(0, lambda: self._set_conn(ok, text))
+        if extra_done is not None:
+            # 供引导卡「重新检测」把结果同步到卡片上的状态行（主线程更新）
+            self.root.after(0, lambda: extra_done(ok, text))
 
     def _set_conn(self, ok, text):
+        first_check = self.ollama_ok is None   # 尚无任何检测结果 = 启动首检
         self.ollama_ok = ok
         self.conn_label.configure(text=text, text_color=OK if ok else ERR)
+        # 首启引导：只在启动首检就失败时按状态机自动弹一次；会话中途的
+        # 瞬时失败不弹模态卡（徽章随时可手动唤出）
+        if ok is False and first_check and not self._onboarding_auto_shown:
+            self._onboarding_auto_shown = True
+            if should_show_onboarding(self.settings, ok):
+                self.root.after(400, self._show_onboarding, True)
+
+    # ================= 首启引导卡（UX-P1-6） =================
+    def _show_onboarding(self, auto=False):
+        """检测不到模型服务时的三选一引导：云端 / 本地 / 稍后再说。
+
+        auto=True 是启动自动弹出，受 onboarding_choice 状态约束（已选过路线
+        的老用户不弹；"稍后再说"只再提醒一次）；顶栏徽章点击唤出时
+        auto=False，不受约束，随时可看。
+        """
+        prev_choice = str(self.settings.get("onboarding_choice", "") or "")
+        if auto and prev_choice == "later":
+            # "稍后再说"后的最后一次自动提醒：先记为已引导——这次无论怎么
+            # 关（选别的、点 ×），都不会再有自动弹出；徽章仍可手动唤出
+            self.settings.set("onboarding_choice", "dismissed")
+
+        dlg = ctk.CTkToplevel(self.root, fg_color=BG)
+        dlg.title("欢迎使用 Desktop Agent")
+        dlg.geometry("560x440")
+        dlg.resizable(False, False)
+        attach_modal_dialog(dlg, self.root)
+        dlg.attributes("-topmost", True)
+        dlg.after(200, dlg.lift)
+
+        def pick(choice):
+            self.settings.set("onboarding_choice", choice)
+
+        def pick_later():
+            # "" → later：下次启动仍未连上时再提醒一次；已是 later（本次就是
+            # 那次提醒，或徽章唤出后再次婉拒）→ dismissed，不再自动弹
+            pick("dismissed" if prev_choice == "later" else "later")
+            dlg.destroy()
+
+        wrap = ctk.CTkFrame(dlg, fg_color="transparent")
+        wrap.pack(fill="both", expand=True, padx=26, pady=(22, 18))
+
+        def build_home():
+            for w in wrap.winfo_children():
+                w.destroy()
+            connected = bool(self.ollama_ok)
+            ctk.CTkLabel(wrap, text="🤖 欢迎使用 Desktop Agent",
+                         font=ctk.CTkFont(size=17, weight="bold"),
+                         text_color=TEXT).pack(anchor="w")
+            ctk.CTkLabel(wrap, text=("✓ 模型服务已连接，可以直接开始用"
+                                     if connected else
+                                     "○ 还没连上模型服务——连上一个 AI 模型才能开始帮你干活"),
+                         font=ctk.CTkFont(size=13),
+                         text_color=OK if connected else WARN).pack(
+                anchor="w", pady=(6, 0))
+            ctk.CTkLabel(wrap, text="选一种方式开始（以后随时可在「设置」里更改）：",
+                         font=ctk.CTkFont(size=13), text_color=MUTED).pack(
+                anchor="w", pady=(2, 16))
+            ctk.CTkButton(wrap, text="☁  我不太懂，用云端（推荐）", height=46,
+                          corner_radius=10, font=ctk.CTkFont(size=13, weight="bold"),
+                          fg_color=ACCENT, hover_color=ACCENT_HOVER,
+                          command=lambda: self._onboarding_pick_cloud(dlg, pick)
+                          ).pack(fill="x", pady=(0, 8))
+            link = ctk.CTkLabel(wrap, text=f"先看看图文教程（网页）：{CLOUD_TUTORIAL_URL}",
+                                font=ctk.CTkFont(size=12), text_color=ACCENT,
+                                cursor="hand2")
+            link.pack(anchor="w", pady=(0, 14))
+            link.bind("<Button-1>", lambda e: webbrowser.open(CLOUD_TUTORIAL_URL))
+            ctk.CTkButton(wrap, text="💻  我要用本地（数据不出本机，需先安装 Ollama）",
+                          height=46, corner_radius=10,
+                          font=ctk.CTkFont(size=13, weight="bold"),
+                          fg_color=CARD_2, hover_color=BORDER,
+                          command=lambda: self._onboarding_pick_local(wrap, pick)
+                          ).pack(fill="x", pady=(0, 8))
+            ctk.CTkButton(wrap, text="⏰  稍后再说", height=40, corner_radius=10,
+                          font=ctk.CTkFont(size=13),
+                          fg_color="transparent", border_width=1,
+                          border_color=BORDER, text_color=MUTED,
+                          hover_color=CARD_2,
+                          command=pick_later).pack(fill="x", pady=(14, 0))
+
+        build_home()
+
+    def _onboarding_pick_cloud(self, dlg, pick):
+        """云端路线：记住选择 → 直接打开设置并定位到「云端模型」区"""
+        pick("cloud")
+        dlg.destroy()
+        self._show_settings(focus="cloud")
+
+    def _onboarding_pick_local(self, wrap, pick):
+        """本地路线：切到第二步——Ollama 下载直链 + 装好后重新检测"""
+        pick("local")
+        for w in wrap.winfo_children():
+            w.destroy()
+        ctk.CTkLabel(wrap, text="💻 用本地模型（数据不出本机）",
+                     font=ctk.CTkFont(size=17, weight="bold"),
+                     text_color=TEXT).pack(anchor="w")
+        ctk.CTkLabel(wrap, text="第 1 步：下载并安装 Ollama（约 500MB，装完它会在后台运行）",
+                     font=ctk.CTkFont(size=13), text_color=MUTED).pack(
+            anchor="w", pady=(14, 6))
+        ctk.CTkButton(wrap, text="打开 Ollama 官方下载页", height=40,
+                      corner_radius=10, font=ctk.CTkFont(size=13),
+                      fg_color=CARD_2, hover_color=BORDER,
+                      command=lambda: webbrowser.open(OLLAMA_DOWNLOAD_URL)
+                      ).pack(fill="x")
+        ctk.CTkLabel(wrap, text="第 2 步：装好后点下面的按钮重新检测，变绿就能开始用",
+                     font=ctk.CTkFont(size=13), text_color=MUTED).pack(
+            anchor="w", pady=(14, 6))
+        status_lbl = ctk.CTkLabel(wrap, text="", font=ctk.CTkFont(size=13),
+                                  text_color=MUTED, anchor="w", wraplength=480,
+                                  justify="left")
+        status_lbl.pack(anchor="w", pady=(0, 6))
+
+        dlg = wrap.master
+
+        def recheck():
+            status_lbl.configure(text="正在检测…", text_color=MUTED)
+
+            def done(ok, _text):
+                status_lbl.configure(
+                    text=("✓ 已连上，可以开始用了！窗口马上自动关闭" if ok
+                          else "○ 还没连上。请确认 Ollama 已安装并在运行，再点一次重试"),
+                    text_color=OK if ok else ERR)
+                if ok:
+                    dlg.after(1400, dlg.destroy)
+            threading.Thread(target=self._check_connection,
+                             args=(done,), daemon=True).start()
+
+        ctk.CTkButton(wrap, text="✓ 我装好了，重新检测", height=44,
+                      corner_radius=10, font=ctk.CTkFont(size=13, weight="bold"),
+                      fg_color=ACCENT, hover_color=ACCENT_HOVER,
+                      command=recheck).pack(fill="x")
+        ctk.CTkButton(wrap, text="关  闭", height=36, corner_radius=10,
+                      font=ctk.CTkFont(size=12),
+                      fg_color="transparent", border_width=1,
+                      border_color=BORDER, text_color=MUTED, hover_color=CARD_2,
+                      command=dlg.destroy).pack(fill="x", pady=(14, 0))
 
     # ================= 高危确认 =================
     def _show_confirm(self, req: dict):
@@ -1942,7 +2090,9 @@ class AgentGUI:
                       fg_color=ACCENT, hover_color=ACCENT_HOVER, text_color=TEXT,
                       command=conn_sample).pack(side="left")
 
-    def _show_settings(self):
+    def _show_settings(self, focus=None):
+        """设置面板。focus="cloud"：从首启引导「用云端」进来——高亮云端区块
+        并滚动到位，让用户一眼看到该填 Key 的地方（UX-P1-6）。"""
         dlg = ctk.CTkToplevel(self.root, fg_color=BG)
         dlg.title("设置")
         # 小屏（如 1366×768）按屏高压窗口，内容靠滚动条够到；固定 900 会让「保存」够不着
@@ -2012,9 +2162,16 @@ class AgentGUI:
             threading.Thread(target=work, daemon=True).start()
 
         # ---- 云端配置 ----
+        focus_cloud = (focus == "cloud")
         cloud_box = ctk.CTkFrame(body, fg_color=CARD, corner_radius=10,
-                                 border_width=1, border_color=BORDER)
+                                 border_width=2 if focus_cloud else 1,
+                                 border_color=ACCENT if focus_cloud else BORDER)
         cloud_box.pack(fill="x", pady=(14, 0))
+        if focus_cloud:
+            ctk.CTkLabel(cloud_box, text="↑ 就在这里：选好服务商，粘贴 API Key，"
+                                         "拉到底部点「保存」",
+                         font=ctk.CTkFont(size=13, weight="bold"),
+                         text_color=ACCENT).pack(anchor="w", padx=14, pady=(10, 0))
         ctk.CTkLabel(cloud_box, text="云端模型", font=ctk.CTkFont(size=12, weight="bold"),
                      text_color=TEXT).pack(anchor="w", padx=14, pady=(10, 2))
 
@@ -2186,6 +2343,18 @@ class AgentGUI:
                       fg_color=ACCENT, hover_color=ACCENT_HOVER,
                       command=save).pack(anchor="w", pady=(16, 0))
         body.after(200, refresh_models)
+
+        if focus_cloud:
+            def scroll_to_cloud():
+                dlg.update_idletasks()
+                try:
+                    canvas = getattr(body, "_parent_canvas")
+                    total = max(1, body.winfo_reqheight())
+                    canvas.yview_moveto(
+                        min(1.0, max(0.0, (cloud_box.winfo_y() - 10) / total)))
+                except Exception:
+                    pass  # 滚不到就靠高亮边框 + 提示条定位，不影响使用
+            dlg.after(180, scroll_to_cloud)
 
     def _show_scheduler(self):
         dlg = ctk.CTkToplevel(self.root, fg_color=BG)

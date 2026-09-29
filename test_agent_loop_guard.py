@@ -22,6 +22,7 @@ import agent_loop
 from agent_loop import DesktopAgent
 from core.audit import AuditLogger
 from core.approval import AutoDenyPolicy
+from core.settings import cloud_ready, should_show_onboarding
 
 
 class _FakeLLM:
@@ -274,3 +275,54 @@ def test_gui_tool_result_judgement_uses_is_failed_result():
     assert _apply("无法连接模型服务: failed to connect to Ollama")["state"] == "err"
     assert _apply("错误: 未知工具 foo")["state"] == "err"   # 传统前缀形态仍判负
     assert _apply("已打开 记事本")["state"] == "ok"          # 正常结果不误伤
+
+
+# ================= 首启引导判定状态机（UX-P1-6，core/settings） =================
+
+@pytest.fixture
+def no_cloud_env(monkeypatch):
+    """清掉云端 Key 环境变量：cloud_ready 只看 settings 里存没存"""
+    from core.settings import CLOUD_PRESETS
+    for preset in CLOUD_PRESETS.values():
+        monkeypatch.delenv(preset["env"], raising=False)
+
+
+def _bare_settings(tmp_path):
+    from core.settings import Settings
+    return Settings(file_path=tmp_path / "settings.json")
+
+
+def test_onboarding_fresh_user_gets_card(tmp_path, no_cloud_env):
+    """清空配置首启（无 Ollama、无 Key）→ 弹引导卡；连上了就不弹"""
+    s = _bare_settings(tmp_path)
+    assert cloud_ready(s) is False
+    assert should_show_onboarding(s, connected=False) is True
+    assert should_show_onboarding(s, connected=True) is False
+
+
+def test_onboarding_veteran_with_cloud_key_not_disturbed(tmp_path, no_cloud_env,
+                                                         monkeypatch):
+    """已配好云端路径的老用户不弹：settings 存了 Key，或对应环境变量有值"""
+    s = _bare_settings(tmp_path)
+    s.set("cloud", {"provider": "zhipu", "api_key": "sk-test"})
+    assert cloud_ready(s) is True
+    assert should_show_onboarding(s, connected=False) is False
+
+    s2 = _bare_settings(tmp_path)
+    monkeypatch.setenv("ZHIPU_API_KEY", "env-key")
+    assert cloud_ready(s2) is True
+    assert should_show_onboarding(s2, connected=False) is False
+
+
+def test_onboarding_later_reminds_once_then_stops(tmp_path, no_cloud_env):
+    """"稍后再说"状态机：later 下次启动仍提醒一次，dismissed 后不再打扰。
+    later→dismissed 的推进发生在 GUI 弹出前（gui._show_onboarding）。"""
+    s = _bare_settings(tmp_path)
+    assert should_show_onboarding(s, connected=False) is True    # 首启
+    s.set("onboarding_choice", "later")
+    assert should_show_onboarding(s, connected=False) is True    # 最后一次提醒
+    s.set("onboarding_choice", "dismissed")
+    assert should_show_onboarding(s, connected=False) is False   # 不再自动弹
+    for chosen in ("cloud", "local"):
+        s.set("onboarding_choice", chosen)
+        assert should_show_onboarding(s, connected=False) is False
