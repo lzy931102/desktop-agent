@@ -6,7 +6,7 @@ AI 看屏幕、动鼠标键盘、验证结果，一步步把事办完。模型�
 
 - 许可证：[MIT](LICENSE)　·　平台：Windows 10/11　·　当前版本：v2.0.14（`gui.py` 的 `APP_VERSION`）
 - 开发实测环境：Python 3.14 / Windows 10（更低版本未实测，依赖均为纯 pip 安装）
-- 测试：核心套件 **213 passed / 7 xfailed**（2026-09-30，命令见下方「测试」节，可在仓库复核）
+- 测试：核心套件 **223 passed / 7 xfailed**（2026-09-30，命令见下方「测试」节，可在仓库复核）
 
 ## 功能特性
 
@@ -21,6 +21,7 @@ AI 看屏幕、动鼠标键盘、验证结果，一步步把事办完。模型�
 - **插件系统**：连接器（.py 工具插件）与技能/专家包（SKILL.md），见 [插件开发指南](docs/插件开发指南.md) 和 [技能包指南](docs/技能包指南.md)
 - **定时任务**：每天 / 每周 / 间隔分钟，持久化到磁盘，重启不重复触发；错过的当天任务不补跑、会在会话里提示
 - **系统托盘**：关窗最小化到托盘继续跑，后台定时任务不中断
+- **手机连接**：设置面板打开开关，手机扫码即可远程下任务、看进度（在家走同一 WiFi 直连；出门可开 cloudflared 外网通道；危险操作仍在电脑上确认）
 - **首启引导**：检测不到模型时弹三选一引导卡（用云端 / 装本机 Ollama / 稍后再说）
 
 ## 安全机制
@@ -99,15 +100,16 @@ python gui.py --debug-open settings       # 直接打开面板：settings / sche
 ## 测试
 
 ```bash
-# 核心套件（guard 审批 / 插件边界 / 技能包 / agent 循环 / 视觉后端 / core）：
+# 核心套件（guard 审批 / 插件边界 / 技能包 / agent 循环 / 视觉后端 / core / 手机桥接）：
 python -m pytest test_core_guard.py test_plugin_system.py test_plugin_boundary.py \
-       test_skill_system.py test_agent_loop_guard.py test_vision_backend.py -q
-# 实测：213 passed, 7 xfailed（7 个 xfailed 是 guard 已拍板不修的绕过变体，
+       test_skill_system.py test_agent_loop_guard.py test_vision_backend.py \
+       test_phone_bridge.py -q
+# 实测：223 passed, 7 xfailed（7 个 xfailed 是 guard 已拍板不修的绕过变体，
 # 用 xfail 固化防回归，理由见 test_core_guard.py 各用例 docstring）
 
 # 全量逻辑测试（含 test_ollama_stream.py 的假响应流测试，不依赖真实 Ollama、不动鼠标）：
 python -m pytest -q
-# 实测：224 passed, 7 xfailed
+# 实测：234 passed, 7 xfailed
 ```
 
 `e2e/` 下的 21 个脚本是**会真动鼠标、真开应用**的一次性桌面操控/端到端脚本，
@@ -151,9 +153,9 @@ desktop-agent/
 ├── core/                 # 基础设施：audit(哈希链)/guard/approval/retry/verify/scheduler/history/settings/paths/feishu
 ├── plugin_system/        # 连接器：.py 工具插件（加载、启停、工具合并）
 ├── skill_system/         # 技能/专家包：SKILL.md 注入（防注入包裹）+ install_skill（走确认卡）
-├── phone_bridge/         # 手机桥接（令牌 + 限速 + 隧道 watchdog + 二维码）——已开发，未接线
+├── phone_bridge/         # 手机连接（设置面板开启 → 手机扫码遥控：令牌+限速+隧道+二维码+事件回流）
 ├── e2e/                  # 桌面操控/端到端脚本（真动鼠标，pytest 不收集）
-├── test_*.py             # 核心测试套件（6 文件）+ test_ollama_stream.py
+├── test_*.py             # 核心测试套件（7 文件）+ test_ollama_stream.py
 ├── docs/                 # 评审/评估报告、修复任务列表、插件与技能包指南
 ├── examples/             # 示例插件（示例插件-天气查询.py）
 ├── DesktopAgent.spec     # PyInstaller 打包配置

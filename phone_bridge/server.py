@@ -82,6 +82,9 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        # 令牌经首次配对链接进入页面（见 qr.build_url 的泄漏面拍板）：
+        # no-referrer 防它随 Referer 外泄；页面本身零外链资源，这是纵深防御
+        self.send_header("Referrer-Policy", "no-referrer")
         self.end_headers()
         try:
             self.wfile.write(body)

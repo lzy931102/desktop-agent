@@ -106,7 +106,7 @@ class PhoneBridge:
         """开启外网通道。组件缺失时返回 need_download=True，由界面去问用户。"""
         if not self.external_ready():
             return {"ok": False, "need_download": True,
-                    "message": "外网通道需要先下载一个 55 MB 的组件（只下一次）"}
+                    "message": "外网通道需要先下载一个 60 多 MB 的组件（只下一次）"}
         if not self.server.running:
             return {"ok": False, "need_download": False,
                     "message": "请先打开手机连接，再开外网通道"}

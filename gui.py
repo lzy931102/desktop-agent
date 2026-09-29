@@ -41,6 +41,15 @@ try:
 except ImportError:
     SkillManager = None  # 技能系统未安装，fallback 到无技能模式
 
+try:
+    from phone_bridge import (PhoneBridge, ST_FAILED, ST_RUNNING, ST_STARTING,
+                              ST_STOPPED)
+    from phone_bridge.contract import (EVENT_ERROR, EVENT_INFO, EVENT_RESULT,
+                                       EVENT_TOOL, EVENT_TURN, STATE_DONE,
+                                       STATE_FAILED, STATE_STOPPED)
+except ImportError:
+    PhoneBridge = None  # 手机连接组件未装齐（如缺 segno），设置面板不显示该分区
+
 # 版本号：显示在窗口标题栏，方便用户与 GitHub Releases 对照（避免旧版新版分不清）
 APP_VERSION = "2.0.14"
 
@@ -263,6 +272,7 @@ class TaskSession:
         self.current_action = ""       # 当前步骤描述（状态条展示）
         self.closing = False           # 已确认关闭、等线程收尾后再从列表摘除
         self.stop_requested_at = None  # 请求停止的时刻（30 秒兜底提示用）
+        self.phone_task_id = None      # 手机下发的任务号（hub 对照）；本地任务为 None
 
     # ---- 事件（主线程调用） ----
     def add(self, kind, **kw):
@@ -639,6 +649,78 @@ def attach_modal_dialog(dlg, owner):
     dlg.bind("<Destroy>", restore)
 
 
+class PhoneTaskRunner:
+    """phone_bridge.hub 的执行方适配器（TaskRunner 协议，任务 16 接线）。
+
+    手机任务落回现有 TaskSession 通道：HTTP 线程只做投递，会话的创建/
+    启动/停止一律经 root.after 回主线程（踩坑.md 条目 4），与本地任务
+    走同一条"并发上限 + 排队"的路，不另开执行路径。submit 必须立即
+    返回（hub 契约：不能阻塞 HTTP 请求线程）。
+    """
+
+    def __init__(self, app):
+        self.app = app
+        # hub 派发后、主线程会话还没建好之前收到的停止请求（见 _create_session）
+        self._stop_before_start = set()
+
+    def submit(self, task_id: str, text: str) -> None:
+        self.app.root.after(0, lambda: self._create_session(task_id, text))
+
+    def stop(self, task_id: str) -> bool:
+        # hub.stop 在持锁状态下调用本方法：只登记 + 投递，绝不在锁内回调 hub
+        self._stop_before_start.add(task_id)
+        self.app.root.after(0, lambda: self._stop_session(task_id))
+        return True
+
+    def _create_session(self, task_id: str, text: str):
+        if task_id in self._stop_before_start:
+            # 停止请求赶在会话落地前：不建会话，直接按已取消收场
+            self._stop_before_start.discard(task_id)
+            if self.app.phone_bridge:
+                try:
+                    self.app.phone_bridge.hub.finish(
+                        task_id, STATE_STOPPED, "还没开始就被叫停了")
+                except Exception:
+                    pass
+            return
+        s = TaskSession(title="📱 " + short_title(text))
+        s.phone_task_id = task_id
+        self.app.sessions[s.id] = s
+        self.app._phone_tasks[task_id] = s
+        s.task_text = text
+        s.add("system", text="📱 这条任务来自手机连接", tone="info")
+        s.add("user", text=text)
+        # 与 _start_or_stop / _run_scheduled 同一条排队规则
+        max_c = max(1, min(5, int(self.app.settings.get(
+            "max_concurrent", DEFAULT_MAX_CONCURRENT))))
+        running = sum(1 for x in self.app.sessions.values()
+                      if x.status == "running")
+        if running >= max_c:
+            s.status = "queued"
+            s.add("system", text=MSG_QUEUED.format(n=running), tone="info")
+        else:
+            s.status = "running"
+            s.add("system", text=MSG_ON_IT, tone="faint")
+            s.launch(self.app)
+        self.app._select(s)
+        self.app._sidebar_dirty = self.app._tabs_dirty = True
+
+    def _stop_session(self, task_id: str):
+        s = self.app._phone_tasks.get(task_id)
+        if s is None:
+            return    # 会话未落地（随 _create_session 的取消路径收场）或已结束
+        if s.status == "queued":
+            s.status = "draft"
+            s.add("system", text="📱 手机端取消了这条任务", tone="info")
+            self.app._phone_task_cancelled(s)
+            self.app._remove_session(s)
+        elif s.status == "running":
+            s.stop_requested_at = time.time()
+            s.stop()   # 与界面上点「停止」等效，done 事件经 _apply 回流 hub
+            s.add("system", text="📱 手机端请求停止：当前这步执行完就停",
+                  tone="faint")
+
+
 class AgentGUI:
     def __init__(self):
         # 按系统 DPI 缩放控件（必须在创建窗口前设置）：高分屏不缩放会字太小
@@ -669,6 +751,13 @@ class AgentGUI:
         self._onboarding_auto_shown = False  # 本次运行只自动弹一次引导卡
         self._sidebar_dirty = True
         self._tabs_dirty = True
+
+        # 手机连接（任务 16）：不在启动时创建/开启——这是把电脑控制权递出
+        # 去的通道，每次启动都由用户在设置面板手动打开，防止忘了它还开着
+        self.phone_bridge = None
+        self._phone_tasks = {}      # phone task_id → TaskSession（hub 对照）
+        self._phone_ui = None       # 打开中的设置面板手机分区刷新回调
+        self._phone_ui_pending = False  # 刷新防抖（on_change 高频触发）
 
         self._build_header()
         self._build_body()
@@ -914,6 +1003,7 @@ class AgentGUI:
             return
         if s.status == "queued":
             s.status = "draft"
+            self._phone_task_cancelled(s)   # 手机任务排队被关闭：hub 落终态
         self._remove_session(s)
 
     def _remove_session(self, s):
@@ -961,6 +1051,8 @@ class AgentGUI:
             return
         if s.status == "queued":
             s.status = "draft"
+            if s.phone_task_id:
+                self._phone_task_cancelled(s)   # 手机任务排队被取消：hub 落终态
             s.add("system", text="好，已取消排队。", tone="faint")
             self._sync_input_state()
             self._sidebar_dirty = self._tabs_dirty = True
@@ -1116,6 +1208,8 @@ class AgentGUI:
                     self.chat.refresh(ev)
         elif kind == "done":
             self._apply_done(s, *payload)
+        if s.phone_task_id:
+            self._phone_forward(s, kind, payload)   # 手机任务：事件回流 hub
         self._sidebar_dirty = self._tabs_dirty = True
 
     def _apply_log(self, s, raw):
@@ -1214,6 +1308,83 @@ class AgentGUI:
         self._update_tray("Desktop Agent · %d 个任务运行中" % sum(
             1 for x in self.sessions.values() if x.status == "running"))
 
+    # ================= 手机连接（任务 16 接线） =================
+    def _ensure_phone_bridge(self):
+        if self.phone_bridge is None:
+            self.phone_bridge = PhoneBridge(
+                runner=PhoneTaskRunner(self),
+                on_change=lambda: self.root.after(0, self._on_phone_change))
+        return self.phone_bridge
+
+    def _on_phone_change(self):
+        """bridge 状态变了（开关/隧道/任务事件）：设置面板开着就刷新手机分区。
+        on_change 从 HTTP/隧道线程高频触发，经 root.after 回主线程并防抖。"""
+        if self._phone_ui is None or self._phone_ui_pending:
+            return
+        self._phone_ui_pending = True
+
+        def run():
+            self._phone_ui_pending = False
+            cb = self._phone_ui
+            if cb is not None:
+                try:
+                    cb()
+                except Exception:
+                    pass    # 面板可能正在销毁，刷新失败不影响桥接本身
+        self.root.after(80, run)
+
+    def _phone_forward(self, s, kind, payload):
+        """手机下发的任务：把会话事件回流到 hub，手机端实时看到进展。
+        只在主线程（_apply/_pump）执行；回流失败绝不反噬本地任务。"""
+        if self.phone_bridge is None:
+            return
+        tid = s.phone_task_id
+        hub = self.phone_bridge.hub
+        try:
+            if kind == "log":
+                k, text = parse_log(payload)
+                if k in ("noise", "blocked"):
+                    return    # 拦截结果经 tool_result 呈现；重试/校验行不上屏
+                hub.publish(tid, {"turn": EVENT_TURN,
+                                  "error": EVENT_ERROR,
+                                  "assistant": EVENT_RESULT}.get(k, EVENT_INFO),
+                            text)
+            elif kind == "tool_call":
+                name, args = payload
+                hub.publish(tid, EVENT_TOOL,
+                            f"🔧 {tool_display(name, args)}")
+            elif kind == "tool_result":
+                name, args, result = payload
+                hub.publish(tid, EVENT_TOOL, str(result))
+            elif kind == "done":
+                ok, result, stopped = payload
+                state = (STATE_STOPPED if stopped
+                         else STATE_DONE if ok else STATE_FAILED)
+                self._phone_tasks.pop(tid, None)
+                hub.finish(tid, state, result or "")
+        except Exception:
+            pass
+
+    def _phone_publish_info(self, s, text):
+        if self.phone_bridge is None:
+            return
+        try:
+            self.phone_bridge.hub.publish(s.phone_task_id, EVENT_INFO, text)
+        except Exception:
+            pass
+
+    def _phone_task_cancelled(self, s):
+        """手机任务在排队时被电脑侧取消：hub 里落终态，否则手机端永远
+        显示"执行中"（排队会话不会产生 done 事件，必须显式收口）。"""
+        if not (s.phone_task_id and self.phone_bridge):
+            return
+        self._phone_tasks.pop(s.phone_task_id, None)
+        try:
+            self.phone_bridge.hub.finish(s.phone_task_id, STATE_STOPPED,
+                                         "已在电脑上取消")
+        except Exception:
+            pass
+
     def answer_confirm(self, ev, allowed):
         GuiApprovalBridge.complete(ev["req"], allowed)
         ev["state"] = "allowed" if allowed else "denied"
@@ -1252,6 +1423,11 @@ class AgentGUI:
                 s.current_action = "⏸ 停下来了，等你确认后才继续"
                 self._log_line(s, "⏸ 有风险操作，等你确认："
                                + str(req)[:120])
+                if s.phone_task_id:
+                    # 手机端看不到确认卡：在任务流里明说卡在哪，免得干等
+                    self._phone_publish_info(
+                        s, "电脑上弹出了确认卡（有风险的操作），"
+                           "需要人在电脑前点「允许」才继续")
                 if self.active is not s:
                     self._select(s)      # 切到该任务，render_all 已包含确认卡
                 else:
@@ -1639,6 +1815,11 @@ class AgentGUI:
     def _real_exit(self):
         self.scheduler.stop()
         self.audit.close()
+        if self.phone_bridge:
+            try:
+                self.phone_bridge.stop()   # 手机连接与外网通道一并收掉
+            except Exception:
+                pass
         if self.tray:
             try:
                 self.tray.stop()
@@ -2337,6 +2518,23 @@ class AgentGUI:
                      fg_color=INPUT_BG, border_color=BORDER).pack(
             fill="x", padx=14, pady=(6, 12))
 
+        # ---- 手机连接（任务 16 接线）----
+        # 唯一入口就在设置面板：手机连接是把电脑控制权递出去的通道，克制
+        # 不加托盘/顶栏快捷入口；开关即时生效、不经「保存」，也**不持久化**——
+        # 每次启动重新手动打开（令牌每次启动都是新的，手机重新扫码即可）
+        if PhoneBridge is not None:
+            phone_box = ctk.CTkFrame(body, fg_color=CARD, corner_radius=10,
+                                     border_width=1, border_color=BORDER)
+            phone_box.pack(fill="x", pady=(14, 0))
+            self._build_phone_section(dlg, phone_box)
+
+            def _phone_ui_gone(event=None):
+                # <Destroy> 对每个子控件都触发，只认对话框自身（同模态钩子）
+                if event is not None and str(event.widget) != str(dlg):
+                    return
+                self._phone_ui = None
+            dlg.bind("<Destroy>", _phone_ui_gone)
+
         def save():
             self.settings.set("model_mode", mode_var.get())
             self.settings.set("max_concurrent", int(conc_var.get()))
@@ -2384,6 +2582,222 @@ class AgentGUI:
                 except Exception:
                     pass  # 滚不到就靠高亮边框 + 提示条定位，不影响使用
             dlg.after(180, scroll_to_cloud)
+
+    def _build_phone_section(self, dlg, box):
+        """设置面板「手机连接」分区：开关 + 二维码/链接 + 令牌重置 + 外网通道。
+
+        开关即时生效、不经「保存」（开/关控制权通道都该是当下明确的动作）；
+        动态区注册到 self._phone_ui，bridge 的 on_change（含隧道状态变化）
+        经 _on_phone_change 防抖后到这里刷新。
+        """
+        ctk.CTkLabel(box, text="📱 手机连接（用手机遥控这台电脑）",
+                     font=ctk.CTkFont(size=12, weight="bold"),
+                     text_color=TEXT).pack(anchor="w", padx=14, pady=(10, 2))
+        ctk.CTkLabel(box,
+                     text="打开开关后手机扫码连接：在家用同一 WiFi 直连；"
+                          "出门在外可开外网通道（地址每次都不同，需重新扫码）。",
+                     font=ctk.CTkFont(size=12), text_color=MUTED,
+                     wraplength=560, justify="left", anchor="w").pack(
+            anchor="w", padx=14)
+
+        sw = ctk.CTkSwitch(box, text="开启手机连接", progress_color=ACCENT,
+                           text_color=TEXT, font=ctk.CTkFont(size=13))
+        live = ctk.CTkFrame(box, fg_color="transparent")
+        live.pack(fill="x", padx=14, pady=(6, 12))
+
+        def refresh():
+            try:
+                for w in live.winfo_children():
+                    w.destroy()
+                bridge = self.phone_bridge
+                if sw.get() and bridge is not None and bridge.running:
+                    self._phone_render_status(live, bridge, refresh)
+                else:
+                    ctk.CTkLabel(live, text="○ 未开启。打开上面的开关，"
+                                           "这里会出现二维码。",
+                                 font=ctk.CTkFont(size=13),
+                                 text_color=FAINT).pack(anchor="w")
+            except Exception:
+                self._phone_ui = None    # 面板正在销毁，不再刷新
+
+        def toggle():
+            if sw.get():
+                try:
+                    self._ensure_phone_bridge().start()
+                except OSError as e:     # 端口附近全被占
+                    messagebox.showerror("手机连接", f"开启失败：{e}",
+                                         parent=dlg)
+                    sw.deselect()
+            else:
+                if self.phone_bridge:
+                    self.phone_bridge.stop()   # 外网通道一并收掉
+            refresh()
+
+        sw.configure(command=toggle)
+        sw.pack(anchor="w", padx=14, pady=(8, 2))
+        self._phone_ui = refresh
+        refresh()
+
+    def _phone_render_status(self, live, bridge, refresh):
+        """「手机连接」开启后的动态区：二维码 + 链接 + 钥匙 + 外网通道。"""
+        st = bridge.status()
+
+        # ---- 在家（局域网直连，主路径）----
+        head = f"✓ 已开启 · 电脑地址 {st['host_ip']}:{st['port']}"
+        ctk.CTkLabel(live, text=head, font=ctk.CTkFont(size=13, weight="bold"),
+                     text_color=OK).pack(anchor="w")
+        ctk.CTkLabel(live, text=st.get("network_hint", ""),
+                     font=ctk.CTkFont(size=12), text_color=FAINT).pack(
+            anchor="w")
+
+        qr_row = ctk.CTkFrame(live, fg_color="transparent")
+        qr_row.pack(fill="x", pady=(6, 0))
+        try:
+            img = tk.PhotoImage(data=bridge.qr_base64("lan", scale=5))
+            lbl = tk.Label(qr_row, image=img, bg=CARD, bd=0,
+                           highlightthickness=0)
+            lbl.image = img      # 防 GC：PhotoImage 被回收二维码就花了
+            lbl.pack(side="left")
+        except Exception:
+            ctk.CTkLabel(qr_row, text="二维码生成失败，请用下面这条链接手动打开",
+                         font=ctk.CTkFont(size=12), text_color=WARN).pack(
+                side="left")
+
+        info = ctk.CTkFrame(qr_row, fg_color="transparent")
+        info.pack(side="left", fill="both", expand=True, padx=(14, 0))
+        ctk.CTkLabel(info, text="手机扫码，或复制链接到手机浏览器打开",
+                     font=ctk.CTkFont(size=12), text_color=MUTED,
+                     wraplength=300, justify="left", anchor="w").pack(anchor="w")
+        ctk.CTkLabel(info, text=st["lan_url"],
+                     font=ctk.CTkFont(family="Consolas", size=11),
+                     text_color=TOOLC, wraplength=300, justify="left",
+                     anchor="w").pack(anchor="w", pady=(2, 0))
+        ctk.CTkButton(info, text="📋 复制链接", width=88, height=24,
+                      corner_radius=6, fg_color=CARD_2, hover_color=BORDER,
+                      text_color=TEXT, font=ctk.CTkFont(size=12),
+                      command=lambda: self._copy_text(st["lan_url"])
+                      ).pack(anchor="w", pady=(4, 0))
+
+        key_row = ctk.CTkFrame(info, fg_color="transparent")
+        key_row.pack(fill="x", pady=(8, 0))
+        ctk.CTkLabel(key_row, text=f"🔑 {st['token_masked']}",
+                     font=ctk.CTkFont(size=12), text_color=FAINT).pack(
+            side="left")
+
+        def rotate():
+            bridge.rotate_token()    # 旧链接/旧二维码立刻作废
+            refresh()
+        ctk.CTkButton(key_row, text="换一把钥匙", width=96, height=24,
+                      corner_radius=6, fg_color=CARD_2, hover_color=BORDER,
+                      text_color=TEXT, font=ctk.CTkFont(size=12),
+                      command=rotate).pack(side="left", padx=(10, 0))
+
+        # ---- 出门（cloudflared 外网通道，可选）----
+        tun = st["tunnel"]
+        ctk.CTkLabel(live, text="出门在外（外网通道）",
+                     font=ctk.CTkFont(size=12, weight="bold"),
+                     text_color=TEXT).pack(anchor="w", pady=(12, 0))
+        tun_row = ctk.CTkFrame(live, fg_color="transparent")
+        tun_row.pack(fill="x", pady=(2, 0))
+
+        def tunnel_on():
+            bridge.enable_external()   # 结果经 on_change → refresh 呈现
+            refresh()
+
+        def tunnel_off():
+            bridge.disable_external()
+            refresh()
+
+        if tun.get("has_binary"):
+            if tun["state"] == ST_RUNNING:
+                ctk.CTkButton(tun_row, text="关闭外网通道", width=110,
+                              height=26, corner_radius=6, fg_color=CARD_2,
+                              hover_color=BORDER, text_color=TEXT,
+                              command=tunnel_off).pack(side="left")
+            else:
+                ctk.CTkButton(tun_row, text="开启外网通道", width=110,
+                              height=26, corner_radius=6, fg_color=ACCENT,
+                              hover_color=ACCENT_HOVER,
+                              command=tunnel_on).pack(side="left")
+        else:
+            dl_lbl = ctk.CTkLabel(tun_row, text="", font=ctk.CTkFont(size=12),
+                                  text_color=MUTED)
+            dl_lbl.pack(side="left", padx=(10, 0))
+
+            def start_download():
+                dl_lbl.configure(text="准备下载…", text_color=MUTED)
+
+                def prog(done, total):
+                    if not total:
+                        return
+                    pct = min(100, done * 100 // total)
+
+                    def upd(p=pct):
+                        try:
+                            if dl_lbl.winfo_exists():
+                                dl_lbl.configure(text=f"下载中… {p}%")
+                        except Exception:
+                            pass
+                    self.root.after(0, upd)
+
+                def work():
+                    from phone_bridge import fetcher
+                    try:
+                        fetcher.download_cloudflared(progress=prog)
+                    except Exception as e:
+                        msg = str(e) or f"下载失败（{type(e).__name__}）"
+
+                        def fail(m=msg):
+                            try:
+                                if dl_lbl.winfo_exists():
+                                    dl_lbl.configure(text=f"✗ {m}",
+                                                     text_color=ERR)
+                            except Exception:
+                                pass
+                        self.root.after(0, fail)
+                        return
+
+                    def ok():
+                        tunnel_on()      # 下完直接开，少一次来回
+                    self.root.after(0, ok)
+
+                threading.Thread(target=work, daemon=True).start()
+
+            ctk.CTkButton(tun_row, text="下载外网通道组件（约 60 MB，只下一次）",
+                          width=250, height=26, corner_radius=6,
+                          fg_color=ACCENT, hover_color=ACCENT_HOVER,
+                          command=start_download).pack(side="left")
+
+        tstate = tun["state"]
+        if tstate == ST_RUNNING:
+            tun_text, tun_color = (f"✓ {tun['message'] or '外网通道已开好'}", OK)
+        elif tstate == ST_STARTING:
+            tun_text, tun_color = (f"⏳ {tun['message'] or '正在开一条通往外网的路…'}",
+                                   WARN)
+        elif tstate == ST_FAILED:
+            tun_text, tun_color = (f"✗ {tun['message'] or '开启失败'}", ERR)
+        else:
+            tun_text, tun_color = "○ 未开启", FAINT
+        ctk.CTkLabel(live, text=tun_text, font=ctk.CTkFont(size=12),
+                     text_color=tun_color, wraplength=560, justify="left",
+                     anchor="w").pack(anchor="w", pady=(4, 0))
+        if st["wan_url"]:
+            ctk.CTkLabel(live, text="出门用这个地址（手机流量也能连；"
+                                    "部分家用路由器解析不了它，连不上就回家用上面的码）：",
+                         font=ctk.CTkFont(size=12), text_color=MUTED,
+                         wraplength=560, justify="left", anchor="w").pack(
+                anchor="w")
+            ctk.CTkLabel(live, text=st["wan_url"],
+                         font=ctk.CTkFont(family="Consolas", size=11),
+                         text_color=TOOLC, wraplength=560, justify="left",
+                         anchor="w").pack(anchor="w")
+
+        ctk.CTkLabel(live,
+                     text="⚠ 链接就是钥匙：二维码和链接只给家里人，别转发。"
+                          "手机丢了或转发过截图，点「换一把钥匙」，旧的立刻作废。",
+                     font=ctk.CTkFont(size=12), text_color=FAINT,
+                     wraplength=560, justify="left", anchor="w").pack(
+            anchor="w", pady=(10, 0))
 
     def _show_scheduler(self):
         dlg = ctk.CTkToplevel(self.root, fg_color=BG)

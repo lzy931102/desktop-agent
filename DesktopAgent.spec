@@ -6,15 +6,16 @@ from PyInstaller.utils.hooks import collect_all
 pw_datas, pw_binaries, pw_hidden = collect_all('pywinauto')
 ct_datas, ct_binaries, ct_hidden = collect_all('comtypes')
 
-# 注意：phone_bridge/ 已开发未接线（docs/修复任务列表-2026-09-29.md 任务 16），
-# 接线后需补打包项（hiddenimports/datas），并核对 pystray/segno 等依赖的收集。
-
+# phone_bridge 接线（任务 16）：手机端页面随 datas 分发（server.web_dir 兼容
+# _MEIPASS），segno 画二维码一并收集；gui 对 phone_bridge 的 try/except 导入
+# 静态可见，hiddenimports 里显式列出是双保险。
 a = Analysis(
     ['gui.py'],
     pathex=[],
     binaries=pw_binaries + ct_binaries,
-    datas=pw_datas + ct_datas,
+    datas=pw_datas + ct_datas + [('phone_bridge/web', 'phone_bridge/web')],
     hiddenimports=['agent_vision', 'plugin_system', 'skill_system',
+                   'phone_bridge', 'segno',
                    'six', 'win32api', 'win32gui', 'win32process',
                    'win32con', 'pywintypes'] + pw_hidden + ct_hidden,
     hookspath=[],

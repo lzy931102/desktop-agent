@@ -72,7 +72,19 @@ def all_lan_ips() -> List[str]:
 
 
 def build_url(ip: str, port: int, token: str, scheme: str = "http") -> str:
-    """拼出手机该打开的链接。令牌编在链接里，扫一次就带上了。"""
+    """拼出手机该打开的链接。令牌编在链接里，扫一次就带上了。
+
+    令牌走 URL 的泄漏面拍板（P2-3）：首次配对必须把令牌递到手机，
+    二维码是最顺手的通道（输口令/蓝牙/NFC 对目标用户都更难）。泄漏面
+    与既有缓解：
+    - 浏览器历史/地址栏：页面拿到令牌立即 history.replaceState 剥掉
+      query，只存 sessionStorage（关标签页即失效）；
+    - Referer：页面零外部资源（无外链字体/脚本），服务端响应再补
+      Referrer-Policy: no-referrer 与 Cache-Control: no-store；
+    - 二维码截图外传：这是"扫码即得控制权"的固有风险，兜底是界面一键
+      「换一把钥匙」立即作废旧令牌。
+    除首次配对外，所有 API 请求都走 X-Phone-Token 头，令牌不再进 URL。
+    """
     return f"{scheme}://{ip}:{port}/?t={token}"
 
 

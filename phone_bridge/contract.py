@@ -6,6 +6,7 @@
 状态机（线性，不可回退）：
 
     pending ──▶ running ──▶ done / failed / stopped
+                        └─▶ unknown（执行方上报了认不出的结束状态，如实标记）
 
 文案约定：本层抛出的异常信息是**直接给用户看的中文**，
 不出现在内部术语（不写 traceback、不写变量名）。
@@ -23,9 +24,11 @@ STATE_RUNNING = "running"
 STATE_DONE = "done"
 STATE_FAILED = "failed"
 STATE_STOPPED = "stopped"
+STATE_UNKNOWN = "unknown"   # 执行方上报了认不出的结束状态（修复前被冒充成 done）
 
-STATES = (STATE_PENDING, STATE_RUNNING, STATE_DONE, STATE_FAILED, STATE_STOPPED)
-TERMINAL_STATES = (STATE_DONE, STATE_FAILED, STATE_STOPPED)
+STATES = (STATE_PENDING, STATE_RUNNING, STATE_DONE, STATE_FAILED, STATE_STOPPED,
+          STATE_UNKNOWN)
+TERMINAL_STATES = (STATE_DONE, STATE_FAILED, STATE_STOPPED, STATE_UNKNOWN)
 
 # 面向手机屏的状态文案（颜色不单独承担信息，配文字）
 STATE_LABELS = {
@@ -34,6 +37,7 @@ STATE_LABELS = {
     STATE_DONE: "已完成",
     STATE_FAILED: "没做成",
     STATE_STOPPED: "已停止",
+    STATE_UNKNOWN: "状态未知",
 }
 
 # 事件类型（手机端按类型上色/加符号）

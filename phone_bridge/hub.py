@@ -22,6 +22,8 @@ from .contract import (
     STATE_FAILED,
     STATE_PENDING,
     STATE_STOPPED,
+    STATE_UNKNOWN,
+    TERMINAL_STATES,
     PhoneTask,
     TaskInputError,
     new_task_id,
@@ -112,15 +114,23 @@ class TaskHub:
         self._notify()
 
     def finish(self, task_id: str, state: str, result: str = "") -> None:
-        """执行方宣布任务结束：落终态 → 让出位置 → 拉起下一条。"""
+        """执行方宣布任务结束：落终态 → 让出位置 → 拉起下一条。
+
+        state 必须是 contract 里的终态。执行方传进认不出的状态（笔误、
+        版本错配）时如实落 "unknown" 并留一条告警事件——修复前任何
+        认不出的状态都被冒充成 done，手机端会把没做完的任务显示成
+        "已完成"（P2-9）。
+        """
         with self._lock:
             task = self._tasks.get(task_id)
             if task is None:
                 return
-            if state not in (STATE_FAILED, STATE_STOPPED):
-                task.mark_finished("done", result)
-            else:
+            if state in TERMINAL_STATES:
                 task.mark_finished(state, result)
+            else:
+                task.add_event(EVENT_ERROR,
+                               f"任务结束状态异常（原文：{state!r}），已如实标记为未知")
+                task.mark_finished(STATE_UNKNOWN, result)
             if self._current_id == task_id:
                 self._current_id = None
             if task_id in self._queue:
