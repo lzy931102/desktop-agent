@@ -216,7 +216,12 @@ class LLMClient:
                 if model and not any(m == model or m.split(":")[0] == model for m in models):
                     return False, f"已连接，但找不到模型 {model}"
                 return True, "已连接"
-            r = requests.get(f"{base}/models", headers={"Authorization": f"Bearer {self.config.api_key}"}, timeout=6)
+            # 云端连通检查与本地同策略（SEC-P1-2）：trust_env=False 忽略环境变量
+            # 与系统代理，用户开着的代理软件（残留/失效的 HTTP(S)_PROXY）劫持不了
+            # 这条请求（踩坑记录见 _chat_ollama 注释）
+            session = requests.Session()
+            session.trust_env = False
+            r = session.get(f"{base}/models", headers={"Authorization": f"Bearer {self.config.api_key}"}, timeout=6)
             r.raise_for_status()
             return True, "已连接"
         except Exception as e:

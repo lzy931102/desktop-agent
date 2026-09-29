@@ -305,8 +305,12 @@ class SkillManager:
         if requests is None:
             return False, "本机没装 requests 库，暂时只支持本地安装（文件夹 / .zip / .md）"
         try:
-            resp = requests.get(url, timeout=20)
-            resp.raise_for_status()
+            with requests.Session() as session:
+                # 出网统一策略（SEC-P1-2）：trust_env=False 忽略环境变量与系统代理；
+                # 代价是确需代理才可达的网址会直连失败——可改用本地 zip/.md 安装
+                session.trust_env = False
+                resp = session.get(url, timeout=20)
+                resp.raise_for_status()
         except Exception as e:
             return False, f"网址下载失败：{_short(e, 120)}"
         data = resp.content or b""

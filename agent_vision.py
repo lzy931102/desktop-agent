@@ -83,7 +83,7 @@ class ScreenVision:
     def _http(self):
         if self._session is None:
             self._session = requests.Session()
-            self._session.trust_env = False  # 本地服务，绕过一切代理
+            self._session.trust_env = False  # 出网统一策略（SEC-P1-2）：本地/云端共用此会话，绕过环境变量与系统代理
         return self._session
 
     # ---------------- 后端选择 ----------------
@@ -196,9 +196,11 @@ class ScreenVision:
             ]}],
         }
         try:
-            r = requests.post(f"{base}/chat/completions",
-                              headers={"Authorization": f"Bearer {key}"},
-                              json=payload, timeout=timeout)
+            # 云端路径复用 _http()（trust_env=False）：用户开着代理软件时截图上传
+            # 不被路由进失效/劫持的代理——"看屏幕莫名失败而聊天正常"的根因就在这类裸调用
+            r = self._http().post(f"{base}/chat/completions",
+                                  headers={"Authorization": f"Bearer {key}"},
+                                  json=payload, timeout=timeout)
             if r.status_code != 200:
                 return "", f"HTTP {r.status_code} {r.text[:120]}"
             data = r.json()

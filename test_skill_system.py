@@ -324,11 +324,25 @@ def test_install_url_uses_requests(monkeypatch, tmp_path):
             pass
 
     current = {"resp": None}
+    seen = {}
+
+    class FakeSession:
+        trust_env = True   # 生产代码会在请求前覆写为 False（SEC-P1-2），在此捕获验证
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def get(self, url, timeout):
+            seen["trust_env"] = self.trust_env
+            return current["resp"]
 
     class FakeRequests:
         @staticmethod
-        def get(url, timeout):
-            return current["resp"]
+        def Session():
+            return FakeSession()
 
     monkeypatch.setattr(sm, "requests", FakeRequests)
 
@@ -341,6 +355,7 @@ def test_install_url_uses_requests(monkeypatch, tmp_path):
     ok, msg = m.install("https://example.com/pack.zip")
     assert ok, msg
     assert m.list()[0].name == "会议纪要助手"
+    assert seen["trust_env"] is False   # SEC-P1-2：网址下载同样走统一出网策略
 
     # .md 文本通路
     current["resp"] = FakeResp(GOOD_EXPERT.encode("utf-8"))

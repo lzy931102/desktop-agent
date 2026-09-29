@@ -67,8 +67,11 @@ def decide(screen_description, goal):
 只输出 JSON，不要其他内容。
 """
     
+    # SEC-P1-2 出网统一策略：trust_env=False（拍板依据见 agent_loop._chat_ollama 注释）
+    session = requests.Session()
+    session.trust_env = False
     try:
-        response = requests.post(
+        response = session.post(
             f"{API_BASE}/chat/completions",
             json={
                 "model": TEXT_MODEL,
@@ -144,8 +147,11 @@ def decide_with_vision(image_path: str, goal: str, mode: Literal["vision", "text
 只输出 JSON，不要其他内容。
 """
     
+    # SEC-P1-2 出网统一策略：trust_env=False（拍板依据见 agent_loop._chat_ollama 注释）
+    session = requests.Session()
+    session.trust_env = False
     try:
-        response = requests.post(
+        response = session.post(
             f"{API_BASE}/chat/completions",
             json={
                 "model": VISION_MODEL,
@@ -230,8 +236,11 @@ def analyze_screen(image_path: str) -> dict:
 只输出 JSON，不要其他内容。
 """
     
+    # SEC-P1-2 出网统一策略：trust_env=False（拍板依据见 agent_loop._chat_ollama 注释）
+    session = requests.Session()
+    session.trust_env = False
     try:
-        response = requests.post(
+        response = session.post(
             f"{API_BASE}/chat/completions",
             json={
                 "model": VISION_MODEL,

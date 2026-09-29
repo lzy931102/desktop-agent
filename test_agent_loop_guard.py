@@ -11,6 +11,7 @@ DesktopAgent._run_loop，验证三条分级路径互不等价：
 修复前行为：agent_loop 只处理 risk == "high"，medium 与 none 完全等价
 （无审计事件、无提示，静默执行）。
 """
+import ast
 import hashlib
 import json
 import time
@@ -326,3 +327,114 @@ def test_onboarding_later_reminds_once_then_stops(tmp_path, no_cloud_env):
     for chosen in ("cloud", "local"):
         s.set("onboarding_choice", chosen)
         assert should_show_onboarding(s, connected=False) is False
+
+
+# ================= 出网代理策略一致性（SEC-P1-2：trust_env=False 全覆盖） =================
+
+_ONE_SHOT_HTTP_ATTRS = {"get", "post", "put", "patch", "delete", "head", "options", "request"}
+_POLICY_SCAN_SUBDIRS = ("core", "skill_system", "plugin_system", "phone_bridge")
+
+
+def _production_py_files():
+    """策略扫描范围：随包发布的源码 = 根目录 *.py（排除 test_*）+ 四个子包。
+    agent/（gitignore 的旧架构遗留，待任务 14 出清单）与 build/dist 等产物不扫。"""
+    root = Path(__file__).resolve().parent
+    files = [p for p in root.glob("*.py") if not p.name.startswith("test_")]
+    for sub in _POLICY_SCAN_SUBDIRS:
+        files.extend(p for p in (root / sub).rglob("*.py")
+                     if "__pycache__" not in p.parts)
+    return files
+
+
+def _is_requests_session_call(node):
+    return (isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "Session"
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "requests")
+
+
+def _target_key(node):
+    """赋值目标的归一化键：剥离 Store/Load 上下文，只比较变量名/属性链"""
+    if isinstance(node, ast.Name):
+        return ("name", node.id)
+    if isinstance(node, ast.Attribute):
+        return ("attr", _target_key(node.value), node.attr)
+    return ("other", ast.dump(node))
+
+
+def _sets_trust_env_false(stmt, owners):
+    """stmt 是否为 `owners[0].trust_env = False`，且赋值对象就是刚创建的会话"""
+    if not (isinstance(stmt, ast.Assign) and len(stmt.targets) == 1):
+        return False
+    target = stmt.targets[0]
+    return (isinstance(target, ast.Attribute) and target.attr == "trust_env"
+            and len(owners) == 1
+            and isinstance(owners[0], (ast.Name, ast.Attribute))
+            and _target_key(target.value) == _target_key(owners[0])
+            and isinstance(stmt.value, ast.Constant) and stmt.value.value is False)
+
+
+def _statement_lists(tree):
+    """所有语句列表（函数/类/分支/异常处理器体），供"创建后紧跟配置"的成对检查"""
+    for node in ast.walk(tree):
+        for attr in ("body", "orelse", "finalbody"):
+            stmts = getattr(node, attr, None)
+            if (isinstance(stmts, list) and stmts
+                    and all(isinstance(s, ast.stmt) for s in stmts)):
+                yield stmts
+        for handler in getattr(node, "handlers", None) or []:
+            yield handler.body
+
+
+def test_all_network_call_points_disable_trust_env():
+    """SEC-P1-2 一致性回归：生产代码所有 requests 网络出口必须 trust_env=False。
+
+    trust_env 不是请求级参数——给 requests.post 这类一次性调用直接传
+    trust_env 会 TypeError，统一策略只能落在 Session 上，故用两条 AST 规则表达：
+    1) 禁止裸 requests.get/post/... 一次性调用（必须经配置过的 Session）；
+    2) 每处 requests.Session() 创建后必须紧跟 trust_env=False（赋值形/with 形都认）。
+    未来新增网络出口漏配会在此红灯；测试脚本（test_*）不在约束范围。
+    """
+    problems, configured = [], 0
+    scanned = set()
+    root = Path(__file__).resolve().parent
+    for path in _production_py_files():
+        rel = path.relative_to(root).as_posix()
+        scanned.add(rel)
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=rel)
+        for node in ast.walk(tree):
+            if (isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Attribute)
+                    and node.func.attr in _ONE_SHOT_HTTP_ATTRS
+                    and isinstance(node.func.value, ast.Name)
+                    and node.func.value.id == "requests"):
+                problems.append(f"{rel}:{node.lineno} 裸 requests.{node.func.attr} 一次性调用")
+        for stmts in _statement_lists(tree):
+            for i, stmt in enumerate(stmts):
+                if (isinstance(stmt, ast.Assign) and isinstance(stmt.value, ast.Call)
+                        and _is_requests_session_call(stmt.value)):
+                    nxt = stmts[i + 1] if i + 1 < len(stmts) else None
+                    if _sets_trust_env_false(nxt, stmt.targets):
+                        configured += 1
+                    else:
+                        problems.append(
+                            f"{rel}:{stmt.lineno} requests.Session 创建后未紧跟 trust_env=False")
+                elif isinstance(stmt, ast.With):
+                    for item in stmt.items:
+                        if (item.optional_vars is not None
+                                and isinstance(item.context_expr, ast.Call)
+                                and _is_requests_session_call(item.context_expr)):
+                            first = stmt.body[0] if stmt.body else None
+                            if _sets_trust_env_false(first, [item.optional_vars]):
+                                configured += 1
+                            else:
+                                problems.append(
+                                    f"{rel}:{stmt.lineno} with requests.Session 体内首行未设 trust_env=False")
+
+    # 扫描面自检：已知网络出口文件必须在内、合规出口必须够数（防扫描路径写错静默通过）
+    for must in ("agent_loop.py", "agent_vision.py", "ai_brain.py",
+                 "core/feishu.py", "skill_system/manager.py"):
+        assert must in scanned, f"策略扫描漏掉了 {must}"
+    assert configured >= 5, f"合规 Session 出口仅 {configured} 处，扫描可能失效"
+    assert not problems, "存在未按统一策略出网的调用点：\n" + "\n".join(problems)

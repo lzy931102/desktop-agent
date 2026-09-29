@@ -43,11 +43,15 @@ def send_feishu_message(text: str, webhook: str = "") -> tuple:
     if err:
         return False, err
     try:
-        resp = requests.post(
-            webhook.strip(),
-            json={"msg_type": "text", "content": {"text": str(text)}},
-            timeout=10,
-            headers={"Content-Type": "application/json"})
+        with requests.Session() as session:
+            # 出网统一策略（SEC-P1-2）：trust_env=False 忽略环境变量与系统代理——
+            # 飞书 Webhook 国内直连可达，走用户本机代理软件只会平添故障面
+            session.trust_env = False
+            resp = session.post(
+                webhook.strip(),
+                json={"msg_type": "text", "content": {"text": str(text)}},
+                timeout=10,
+                headers={"Content-Type": "application/json"})
     except requests.RequestException as e:
         return False, f"网络请求失败: {e}"
     if resp.status_code != 200:
