@@ -69,9 +69,12 @@ RULES = [
 
 
 # 工具级基础风险（与参数内容无关）：不在表内的默认 none。
-# install_skill 要访问网络并往技能目录写文件 → medium（审计 + 界面提示，不拦截）。
+# install_skill 要访问网络并往技能目录写文件，且装进来的 SKILL.md 文本会
+# 注入 AI 的 system prompt（指令注入通道）→ high：走 approval 确认卡，
+# AI 自装与 GUI 手装同权；evaluate() 会在 reason 里附上来源供确认卡展示。
 TOOL_BASE_RISK = {
-    "install_skill": ("medium", "安装技能包：访问网络并写入技能目录"),
+    "install_skill": ("high", "安装技能包：访问网络下载内容并写入技能目录，"
+                      "技能文本会注入 AI 的系统提示词"),
 }
 
 
@@ -234,4 +237,10 @@ def evaluate(tool_name: str, args: dict) -> tuple:
         for kw in rule.get("equals", []):
             if value == _normalize(kw):
                 return rule["risk"], rule["reason"]
-    return TOOL_BASE_RISK.get(tool_name, ("none", ""))
+    risk, reason = TOOL_BASE_RISK.get(tool_name, ("none", ""))
+    if tool_name == "install_skill" and risk == "high":
+        # 确认卡展示用：让用户看清自己批准的来源（网址或本地路径）
+        src = args.get("source", "")
+        if isinstance(src, str) and src.strip():
+            reason = f"{reason}；来源：{src.strip()[:200]}"
+    return risk, reason
