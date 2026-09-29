@@ -940,8 +940,18 @@ class AgentGUI:
             return
         if self.ollama_ok is False:
             threading.Thread(target=self._check_connection, daemon=True).start()
-            s.add("system", text="连不上本地 Ollama，请确认它已启动，我正在重新检测…",
-                  tone="err")
+            # ollama_ok 存的是当前模式下的连通状态（云端模式存的是云端连通），
+            # 文案要跟模式走，别把用云端的用户指去查 Ollama
+            mode = self.settings.get("model_mode", "local")
+            if mode == "cloud":
+                msg = ("连不上云端模型服务，请在「设置 → 云端模型」检查 API Key 和网络，"
+                       "我正在重新检测…")
+            elif mode == "auto":
+                msg = ("本地和云端都连不上：本地请确认 Ollama 已启动，"
+                       "云端请在「设置 → 云端模型」检查 API Key 和网络。我正在重新检测…")
+            else:
+                msg = "连不上本地 Ollama，请确认它已启动，我正在重新检测…"
+            s.add("system", text=msg, tone="err")
             if self.active is s:
                 self.chat.append(s.events[-1])
             return
@@ -1892,10 +1902,11 @@ class AgentGUI:
     def _show_settings(self):
         dlg = ctk.CTkToplevel(self.root, fg_color=BG)
         dlg.title("设置")
-        dlg.geometry("620x900")
+        # 小屏（如 1366×768）按屏高压窗口，内容靠滚动条够到；固定 900 会让「保存」够不着
+        dlg.geometry(f"620x{min(900, int(dlg.winfo_screenheight() * 0.8))}")
         attach_modal_dialog(dlg, self.root)
 
-        body = ctk.CTkFrame(dlg, fg_color="transparent")
+        body = ctk.CTkScrollableFrame(dlg, fg_color="transparent")
         body.pack(fill="both", expand=True, padx=22, pady=14)
         ctk.CTkLabel(body, text="⚙ 设置", font=ctk.CTkFont(size=16, weight="bold"),
                      text_color=TEXT).pack(anchor="w")
@@ -1939,15 +1950,23 @@ class AgentGUI:
         local_hint.pack(anchor="w", pady=(4, 0))
 
         def refresh_models():
-            models = LLMClient(LLMConfig(provider=LLMProvider.OLLAMA,
-                                         base_url=OLLAMA_URL)).list_models()
-            if models:
-                model_menu.configure(values=models)
-                if model_var.get() not in models:
-                    model_var.set(models[0])
-                local_hint.configure(text=f"共 {len(models)} 个本地模型可用")
-            else:
-                local_hint.configure(text="读不到模型列表，请确认 Ollama 正在运行")
+            # 网络请求放后台线程：Ollama 没开时主线程会冻 5 秒（踩坑.md 条目 4）
+            def work():
+                models = LLMClient(LLMConfig(
+                    provider=LLMProvider.OLLAMA,
+                    base_url=OLLAMA_URL)).list_models()
+
+                def done():
+                    if models:
+                        model_menu.configure(values=models)
+                        if model_var.get() not in models:
+                            model_var.set(models[0])
+                        local_hint.configure(text=f"共 {len(models)} 个本地模型可用")
+                    else:
+                        local_hint.configure(
+                            text="读不到模型列表，请确认 Ollama 正在运行")
+                self.root.after(0, done)
+            threading.Thread(target=work, daemon=True).start()
 
         # ---- 云端配置 ----
         cloud_box = ctk.CTkFrame(body, fg_color=CARD, corner_radius=10,
@@ -2055,8 +2074,10 @@ class AgentGUI:
                     model=cmodel_var.get().strip(),
                 )
                 ok, msg = LLMClient(cfg).ping()
-                test_result.configure(text=("✓ " if ok else "✗ ") + msg,
-                                      text_color=OK if ok else ERR)
+                # 后台线程不碰控件，结果投回主线程更新（对齐 _check_connection）
+                self.root.after(0, lambda: test_result.configure(
+                    text=("✓ " if ok else "✗ ") + msg,
+                    text_color=OK if ok else ERR))
             threading.Thread(target=work, daemon=True).start()
 
         ctk.CTkButton(test_row, text="测试连接", width=100, height=26,
@@ -2082,10 +2103,10 @@ class AgentGUI:
                      text="粘贴群机器人的 Webhook 地址后，Agent 可直接给飞书群发消息",
                      font=ctk.CTkFont(size=13), text_color=MUTED).pack(
             anchor="w", padx=14)
-        ctk.CTkEntry(feishu_box, textvariable=feishu_var, width=560,
+        ctk.CTkEntry(feishu_box, textvariable=feishu_var,
                      placeholder_text="https://open.feishu.cn/open-apis/bot/v2/hook/…",
                      fg_color=INPUT_BG, border_color=BORDER).pack(
-            anchor="w", padx=14, pady=(6, 12))
+            fill="x", padx=14, pady=(6, 12))
 
         def save():
             self.settings.set("model_mode", mode_var.get())
