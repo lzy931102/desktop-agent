@@ -42,6 +42,17 @@ DEFAULTS = {
     # 首启引导（UX-P1-6）：""=未引导；"cloud"/"local"=已选路线，不再自动弹；
     # "later"=下次启动仍未连上时再提醒一次；"dismissed"=不再自动弹（徽章仍可唤出）
     "onboarding_choice": "",
+    # 邮件远程（mail_remote，任务 18）：手机发邮件遥控电脑。授权码只落本机
+    # settings.json（不在代码仓库）；开关不持久化——每次启动手动开启
+    "mail_remote": {
+        "username": "",
+        "auth_code": "",
+        "imap_host": "",       # 留空按邮箱域名自动识别（qq/163/gmail/outlook…）
+        "smtp_host": "",
+        "allowed_senders": "",  # 白名单发件人（逗号/分号分隔），空 = 不受理任何来信
+        "poll_seconds": 60,
+        "subject_prefix": "[da]",
+    },
 }
 
 # Agent 单次任务的最大思考-行动轮数上限（REL-P1-3 单一来源：gui 界面展示与

@@ -50,6 +50,8 @@ try:
 except ImportError:
     PhoneBridge = None  # 手机连接组件未装齐（如缺 segno），设置面板不显示该分区
 
+from mail_remote import MailConfigError, MailRemote  # 邮件远程（独立模块，纯标准库）
+
 # 版本号：显示在窗口标题栏，方便用户与 GitHub Releases 对照（避免旧版新版分不清）
 APP_VERSION = "2.0.15"
 
@@ -273,6 +275,7 @@ class TaskSession:
         self.closing = False           # 已确认关闭、等线程收尾后再从列表摘除
         self.stop_requested_at = None  # 请求停止的时刻（30 秒兜底提示用）
         self.phone_task_id = None      # 手机下发的任务号（hub 对照）；本地任务为 None
+        self.mail_task_id = None       # 邮件远程下发的任务号；本地任务为 None
 
     # ---- 事件（主线程调用） ----
     def add(self, kind, **kw):
@@ -721,6 +724,68 @@ class PhoneTaskRunner:
                   tone="faint")
 
 
+class MailTaskRunner:
+    """mail_remote 的执行方适配器：与 PhoneTaskRunner 同形（轮询线程只投递，
+    会话创建/启停一律经 root.after 回主线程），任务落同一条 TaskSession 通道。
+
+    与手机路径的差异：邮件通道带宽低，事件不做逐条回流——受理确认/查状态/
+    停止由 mail_remote 直接回信，任务收尾由 _apply 的一次 done 事件回信结果。
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    def submit(self, task_id: str, text: str) -> None:
+        self.app.root.after(0, lambda: self._create_session(task_id, text))
+
+    def stop(self, task_id: str) -> bool:
+        self.app.root.after(0, lambda: self._stop_session(task_id))
+        return True
+
+    def _create_session(self, task_id: str, text: str):
+        s = TaskSession(title="✉️ " + short_title(text))
+        s.mail_task_id = task_id
+        self.app.sessions[s.id] = s
+        self.app._mail_tasks[task_id] = s
+        s.task_text = text
+        s.add("system", text="✉️ 这条任务来自邮件远程", tone="info")
+        s.add("user", text=text)
+        # 与 _start_or_stop / _run_scheduled 同一条排队规则
+        max_c = max(1, min(5, int(self.app.settings.get(
+            "max_concurrent", DEFAULT_MAX_CONCURRENT))))
+        running = sum(1 for x in self.app.sessions.values()
+                      if x.status == "running")
+        if running >= max_c:
+            s.status = "queued"
+            s.add("system", text=MSG_QUEUED.format(n=running), tone="info")
+        else:
+            s.status = "running"
+            s.add("system", text=MSG_ON_IT, tone="faint")
+            s.launch(self.app)
+        self.app._select(s)
+        self.app._sidebar_dirty = self.app._tabs_dirty = True
+
+    def _stop_session(self, task_id: str):
+        s = self.app._mail_tasks.get(task_id)
+        if s is None:
+            return
+        if s.status == "queued":
+            s.status = "draft"
+            s.add("system", text="✉️ 邮件端取消了这条任务", tone="info")
+            if self.app.mail_remote:
+                try:
+                    self.app.mail_remote.report(task_id, "已停止",
+                                                "已在开始前取消")
+                except Exception:
+                    pass
+            self.app._remove_session(s)
+        elif s.status == "running":
+            s.stop_requested_at = time.time()
+            s.stop()
+            s.add("system", text="✉️ 邮件端请求停止：当前这步执行完就停",
+                  tone="faint")
+
+
 class AgentGUI:
     def __init__(self):
         # 按系统 DPI 缩放控件（必须在创建窗口前设置）：高分屏不缩放会字太小
@@ -758,6 +823,12 @@ class AgentGUI:
         self._phone_tasks = {}      # phone task_id → TaskSession（hub 对照）
         self._phone_ui = None       # 打开中的设置面板手机分区刷新回调
         self._phone_ui_pending = False  # 刷新防抖（on_change 高频触发）
+
+        # 邮件远程（mail_remote，任务 18）：同样默认关闭、手动开启；
+        # 轮询线程在模块内部，GUI 只负责接线与终态回信
+        self.mail_remote = None
+        self._mail_tasks = {}       # mail task_id → TaskSession
+        self._mail_ui = None        # 打开中的设置面板邮件分区状态回调
 
         self._build_header()
         self._build_body()
@@ -1210,6 +1281,8 @@ class AgentGUI:
             self._apply_done(s, *payload)
         if s.phone_task_id:
             self._phone_forward(s, kind, payload)   # 手机任务：事件回流 hub
+        if s.mail_task_id:
+            self._mail_forward(s, kind, payload)    # 邮件任务：终态回信（不逐事件刷）
         self._sidebar_dirty = self._tabs_dirty = True
 
     def _apply_log(self, s, raw):
@@ -1382,6 +1455,52 @@ class AgentGUI:
         try:
             self.phone_bridge.hub.finish(s.phone_task_id, STATE_STOPPED,
                                          "已在电脑上取消")
+        except Exception:
+            pass
+
+    # ================= 邮件远程（mail_remote，任务 18） =================
+    def _ensure_mail_remote(self):
+        if self.mail_remote is None:
+            self.mail_remote = MailRemote(
+                runner=MailTaskRunner(self),
+                status_provider=self._mail_status_snapshot,
+                on_log=self._mail_log)
+        return self.mail_remote
+
+    def _mail_log(self, msg):
+        """邮件模块日志：控制台留档 + 设置面板开着时刷新状态行"""
+        print(msg)
+        cb = self._mail_ui
+        if cb is not None:
+            try:
+                cb()
+            except Exception:
+                pass
+
+    def _mail_status_snapshot(self):
+        """「状态」命令回信的数据源（轮询线程调用，读取要容错）。"""
+        try:
+            running = [{"title": s.title,
+                        "action": s.current_action or "执行中"}
+                       for s in list(self.sessions.values())
+                       if s.status == "running"]
+            queued = sum(1 for s in self.sessions.values()
+                         if s.status == "queued")
+            return {"running": running, "queued": queued}
+        except Exception:
+            return {"running": [], "queued": 0}
+
+    def _mail_forward(self, s, kind, payload):
+        """邮件任务只在收尾回一次信：受理确认/状态/停止由 mail_remote 自己
+        回信，逐工具事件回信会让邮箱刷屏（邮件通道带宽低，与手机路径不同）。"""
+        if self.mail_remote is None or kind != "done":
+            return
+        ok, result, stopped = payload
+        state = ("已停止" if stopped else
+                 "已完成" if ok else "没做成")
+        self._mail_tasks.pop(s.mail_task_id, None)
+        try:
+            self.mail_remote.report(s.mail_task_id, state, result or "")
         except Exception:
             pass
 
@@ -1818,6 +1937,11 @@ class AgentGUI:
         if self.phone_bridge:
             try:
                 self.phone_bridge.stop()   # 手机连接与外网通道一并收掉
+            except Exception:
+                pass
+        if self.mail_remote:
+            try:
+                self.mail_remote.stop()    # 邮件轮询线程一并收掉
             except Exception:
                 pass
         if self.tray:
@@ -2535,6 +2659,20 @@ class AgentGUI:
                 self._phone_ui = None
             dlg.bind("<Destroy>", _phone_ui_gone)
 
+        # ---- 邮件远程（mail_remote 独立模块，任务 18）----
+        # 与手机连接同一条拍板：控制权通道默认关闭、手动开启、不持久化；
+        # 邮箱授权码照 settings.json 本机留存（同云端 API Key 的凭据策略）
+        mail_box = ctk.CTkFrame(body, fg_color=CARD, corner_radius=10,
+                                border_width=1, border_color=BORDER)
+        mail_box.pack(fill="x", pady=(14, 0))
+        self._build_mail_section(dlg, mail_box)
+
+        def _mail_ui_gone(event=None):
+            if event is not None and str(event.widget) != str(dlg):
+                return
+            self._mail_ui = None
+        dlg.bind("<Destroy>", _mail_ui_gone)
+
         def save():
             self.settings.set("model_mode", mode_var.get())
             self.settings.set("max_concurrent", int(conc_var.get()))
@@ -2798,6 +2936,118 @@ class AgentGUI:
                      font=ctk.CTkFont(size=12), text_color=FAINT,
                      wraplength=560, justify="left", anchor="w").pack(
             anchor="w", pady=(10, 0))
+
+    def _build_mail_section(self, dlg, box):
+        """设置面板「邮件远程」分区（任务 18）：开关即时生效、不经「保存」。
+
+        凭据（授权码）照云端 API Key 同一策略落本机 settings.json；
+        开关不持久化——每次启动手动开启，与手机连接同一条控制权拍板。
+        """
+        mail_cfg = dict(self.settings.get("mail_remote", {}) or {})
+        ctk.CTkLabel(box, text="✉️ 邮件远程（手机发邮件遥控电脑）",
+                     font=ctk.CTkFont(size=12, weight="bold"),
+                     text_color=TEXT).pack(anchor="w", padx=14, pady=(10, 2))
+        ctk.CTkLabel(
+            box,
+            text="手机给上面的电脑邮箱发邮件就能下任务、查状态、停止，"
+                 "结果自动回信到手机——出门在外不用同一 WiFi、不用隧道。"
+                 "主题格式：[da] 任务内容 ／ [da] 状态 ／ [da] 停止",
+            font=ctk.CTkFont(size=12), text_color=MUTED,
+            wraplength=560, justify="left", anchor="w").pack(
+            anchor="w", padx=14)
+
+        grid = ctk.CTkFrame(box, fg_color="transparent")
+        grid.pack(fill="x", padx=14, pady=(6, 0))
+        user_var = ctk.StringVar(value=mail_cfg.get("username", ""))
+        code_var = ctk.StringVar(value=mail_cfg.get("auth_code", ""))
+        senders_var = ctk.StringVar(value=mail_cfg.get("allowed_senders", ""))
+        imap_var = ctk.StringVar(value=mail_cfg.get("imap_host", ""))
+        smtp_var = ctk.StringVar(value=mail_cfg.get("smtp_host", ""))
+        poll_var = ctk.StringVar(value=str(mail_cfg.get("poll_seconds", 60)))
+
+        def _row(label, var, show="", width=300, placeholder=""):
+            r = ctk.CTkFrame(grid, fg_color="transparent")
+            r.pack(fill="x", pady=2)
+            ctk.CTkLabel(r, text=label, font=ctk.CTkFont(size=13),
+                         text_color=MUTED, width=110, anchor="w").pack(
+                side="left")
+            ctk.CTkEntry(r, textvariable=var, show=show, width=width,
+                         fg_color=INPUT_BG, border_color=BORDER,
+                         placeholder_text=placeholder).pack(side="left",
+                                                            padx=(6, 0))
+
+        _row("电脑邮箱账号", user_var, width=300,
+             placeholder="user@qq.com（收任务指令和回信都用它）")
+        _row("授权码", code_var, show="*", width=300,
+             placeholder="邮箱设置里开启 IMAP/SMTP 后生成，不是登录密码")
+        _row("白名单发件人", senders_var, width=300,
+             placeholder="手机邮箱，多个用逗号隔开（名单外一律不受理）")
+        _row("收件服务器", imap_var, width=300,
+             placeholder="留空自动识别（如 imap.qq.com）")
+        _row("发件服务器", smtp_var, width=300,
+             placeholder="留空自动识别（如 smtp.qq.com）")
+        _row("轮询间隔（秒）", poll_var, width=120, placeholder="60")
+
+        sw = ctk.CTkSwitch(box, text="启用邮件远程", progress_color=ACCENT,
+                           text_color=TEXT, font=ctk.CTkFont(size=13))
+        sw.pack(anchor="w", padx=14, pady=(8, 2))
+
+        status_lbl = ctk.CTkLabel(box, text="", font=ctk.CTkFont(size=12),
+                                  text_color=MUTED, wraplength=560,
+                                  justify="left", anchor="w")
+        status_lbl.pack(anchor="w", padx=14, pady=(4, 10))
+
+        def refresh():
+            try:
+                if not status_lbl.winfo_exists():
+                    return
+                if sw.get() and self.mail_remote and self.mail_remote.running:
+                    err = self.mail_remote.last_error
+                    status_lbl.configure(
+                        text=(f"✓ 已开启：{self.mail_remote.username} 正在监听"
+                              if not err else f"⚠ 已开启，但最近一次检查失败：{err}"),
+                        text_color=OK if not err else WARN)
+                else:
+                    status_lbl.configure(text="○ 未开启", text_color=FAINT)
+            except Exception:
+                pass
+
+        def toggle():
+            if sw.get():
+                cfg = {"username": user_var.get(), "auth_code": code_var.get(),
+                       "imap_host": imap_var.get(), "smtp_host": smtp_var.get(),
+                       "allowed_senders": senders_var.get(),
+                       "poll_seconds": poll_var.get(),
+                       "subject_prefix": mail_cfg.get("subject_prefix", "[da]")}
+                try:
+                    self._ensure_mail_remote().start(cfg)
+                except MailConfigError as e:
+                    messagebox.showerror("邮件远程", str(e), parent=dlg)
+                    sw.deselect()
+                except Exception as e:
+                    messagebox.showerror("邮件远程",
+                                         f"开启失败：{type(e).__name__}: {e}",
+                                         parent=dlg)
+                    sw.deselect()
+                    return
+                # 凭据/配置照云端 Key 同策略落本机 settings.json，下次预填
+                self.settings.set("mail_remote", {
+                    **mail_cfg,
+                    "username": user_var.get().strip(),
+                    "auth_code": code_var.get().strip(),
+                    "imap_host": imap_var.get().strip(),
+                    "smtp_host": smtp_var.get().strip(),
+                    "allowed_senders": senders_var.get().strip(),
+                    "poll_seconds": poll_var.get().strip(),
+                })
+            else:
+                if self.mail_remote:
+                    self.mail_remote.stop()
+            refresh()
+
+        sw.configure(command=toggle)
+        self._mail_ui = refresh
+        refresh()
 
     def _show_scheduler(self):
         dlg = ctk.CTkToplevel(self.root, fg_color=BG)
