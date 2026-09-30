@@ -250,6 +250,15 @@ def parse_log(m: str):
     return "info", m
 
 
+def _effective_max_turns(settings) -> int:
+    """轮次上限显示的单一来源（T7）：settings["max_turns"]，缺省回落 MAX_TURNS。
+    与 agent_loop.DesktopAgent 的取值逻辑保持一致。"""
+    try:
+        return max(1, int(settings.get("max_turns", MAX_TURNS)))
+    except (TypeError, ValueError):
+        return MAX_TURNS
+
+
 class TaskSession:
     """一个任务会话 = 一个 Tab。只管状态与线程，Tk 渲染全在主线程。"""
     _seq = 0
@@ -321,7 +330,8 @@ class TaskSession:
 
             agent = DesktopAgent(llm, auditor=app.audit, history=app.history,
                                  approval=self.approval, plugins=plugins,
-                                 skills=skills)
+                                 skills=skills,
+                                 max_turns=_effective_max_turns(app.settings))
             agent.on_log = lambda m: self.ui_queue.put(("log", m))
             agent.on_tool_call = lambda n, a: self.ui_queue.put(("tool_call", (n, a)))
             agent.on_tool_result = lambda n, a, r: self.ui_queue.put(
@@ -1293,7 +1303,7 @@ class AgentGUI:
             m = re.search(r"第 (\d+)/", text)
             n = int(m.group(1)) if m else 0
             s.turn = n
-            s.current_action = f"🧠 第 {n}/{MAX_TURNS} 轮思考中…"
+            s.current_action = f"🧠 第 {n}/{_effective_max_turns(self.app.settings)} 轮思考中…"
             self._log_line(s, f"—— 第 {n} 轮 ——")
             ev = s.add("turn", n=n)
         elif kind == "assistant":
@@ -1592,7 +1602,8 @@ class AgentGUI:
             return
         if s.status == "running" and s.start_time:
             elapsed = int(time.time() - s.start_time)
-            turn = f"第 {s.turn}/{MAX_TURNS} 轮" if s.turn else "准备中"
+            turn = (f"第 {s.turn}/{_effective_max_turns(self.settings)} 轮"
+                    if s.turn else "准备中")
             tokens = s.agent.total_tokens if s.agent else 0
             self.progress_label.configure(
                 text=f"⏳ {turn} · 已用 {elapsed} 秒 · ⚡ {fmt_tokens(tokens)} tokens")
@@ -1650,7 +1661,7 @@ class AgentGUI:
         for s in reversed(list(self.sessions.values())):  # 新任务在上
             color = STATUS_COLOR[s.status]
             sub = {"running": ("⏹ 正在停止，这步跑完就关" if s.closing
-                               else f"第 {s.turn}/{MAX_TURNS} 轮"),
+                               else f"第 {s.turn}/{_effective_max_turns(self.settings)} 轮"),
                    "queued": "排队等待中",
                    "done": f"完成 · {s.elapsed:.0f} 秒" if s.elapsed else "完成",
                    "failed": "失败了，点进去看看",
@@ -2045,7 +2056,8 @@ class AgentGUI:
             for s in reversed(list(self.sessions.values())):
                 if s.status == "draft" and not s.task_text:
                     continue
-                turns = f"{s.turn}/{MAX_TURNS}" if s.turn else "-"
+                turns = (f"{s.turn}/{_effective_max_turns(self.settings)}"
+                         if s.turn else "-")
                 elapsed = f"{s.elapsed:.0f}秒" if s.elapsed else \
                     (f"{int(time.time() - s.start_time)}秒…" if s.start_time else "-")
                 when = rel_time(time.strftime(
@@ -2457,6 +2469,18 @@ class AgentGUI:
                           button_color=ACCENT, button_hover_color=ACCENT_HOVER).pack(
             anchor="w")
 
+        # ---- 单任务最大轮次（T7）----
+        # 10 轮对"开网页→看页面→记事本→保存"这类多步任务必顶格失败
+        # （2026-09-30 晚 4/6 任务 max_turns），默认 30；复杂任务可再调大
+        ctk.CTkLabel(body, text="单个任务最多执行几轮（复杂任务建议 25 以上）",
+                     font=ctk.CTkFont(size=12), text_color=MUTED).pack(
+            anchor="w", pady=(12, 2))
+        turns_var = ctk.StringVar(value=str(_effective_max_turns(self.settings)))
+        ctk.CTkOptionMenu(body, values=["10", "15", "20", "25", "30", "40", "50"],
+                          variable=turns_var, width=100, fg_color=INPUT_BG,
+                          button_color=ACCENT, button_hover_color=ACCENT_HOVER).pack(
+            anchor="w")
+
         # ---- 本地配置 ----
         ctk.CTkLabel(body, text="本地模型（Ollama，数据不出本机）",
                      font=ctk.CTkFont(size=12), text_color=MUTED).pack(
@@ -2676,6 +2700,7 @@ class AgentGUI:
         def save():
             self.settings.set("model_mode", mode_var.get())
             self.settings.set("max_concurrent", int(conc_var.get()))
+            self.settings.set("max_turns", int(turns_var.get()))
             self.settings.set("local", {**self.settings.get("local", {}),
                                         "model": model_var.get(),
                                         "base_url": OLLAMA_URL,

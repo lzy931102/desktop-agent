@@ -53,11 +53,15 @@ DEFAULTS = {
         "poll_seconds": 60,
         "subject_prefix": "[da]",
     },
+    # 单任务最大轮次（T7）：实测 10 轮对"开浏览器→看页面→记事本→保存"这类
+    # 多步任务必顶格失败（2026-09-30 晚 6 任务 4 个 max_turns），默认提到 30；
+    # 设置面板可调，落盘本 key
+    "max_turns": 30,
 }
 
-# Agent 单次任务的最大思考-行动轮数上限（REL-P1-3 单一来源：gui 界面展示与
-# agent_loop 循环都引用这里，改一处即全局生效）
-MAX_TURNS = 10
+# Agent 单次任务的最大思考-行动轮数上限的兜底默认值（REL-P1-3 单一来源：
+# gui 界面展示与 agent_loop 循环都以 settings["max_turns"] 为准，缺省回落这里）
+MAX_TURNS = 30
 
 # 云端服务商预设与对应的环境变量名
 CLOUD_PRESETS = {

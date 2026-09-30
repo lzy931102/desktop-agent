@@ -919,7 +919,8 @@ SYSTEM_PROMPT = """你是一个电脑操作助手，通过工具帮用户完成�
 class DesktopAgent:
     def __init__(self, llm: LLMClient = None, workdir: Path = None,
                  auditor: AuditLogger = None, history: TaskHistory = None,
-                 approval=None, plugins=None, skills=None):
+                 approval=None, plugins=None, skills=None,
+                 max_turns: int = None):
         """auditor/history/approval 为企业化基础设施（core 包），依赖注入：
         不传则无审计无历史，高危操作按 AutoDenyPolicy 拒绝。
 
@@ -927,9 +928,11 @@ class DesktopAgent:
         若不提供或 PluginManager 未安装，只使用内置工具（TOOL_FUNCTIONS）。
         skills: SkillManager 实例（可选）。若提供，技能/专家包的指南注入
         system prompt，并注册 install_skill 工具；不提供则无技能能力。
+        max_turns: 单任务轮次上限（T7）；不传用 MAX_TURNS 兜底。
+        GUI 侧传 settings["max_turns"]（设置面板可调）。
         """
         self.workdir = workdir or Path.cwd()
-        self.max_turns = MAX_TURNS
+        self.max_turns = max(1, int(max_turns)) if max_turns else MAX_TURNS
         self._image_located = False   # locate_on_screen 是否成功（供旧逻辑兼容）
         self._last_locate_failed = False  # 上一次 locate_on_screen 失败 → 拦截下一次盲点击
         self._stop_requested = False  # 用户请求停止
@@ -1133,6 +1136,20 @@ class DesktopAgent:
                 return "已按要求停止执行。"
             self.current_turn = turn + 1
             self._log(f"\n── 第 {turn + 1}/{self.max_turns} 轮 ──")
+
+            # T7 轮次提示：只剩最后 2 轮时提醒模型收束（10 轮时代 4/6 任务
+            # 顶格失败的部分原因就是模型不知道预算将尽，还在开新步骤）。
+            # 注入为 user 消息跟在上一轮工具结果后，模型每轮都能看见。
+            remaining = self.max_turns - (turn + 1)
+            if remaining <= 2:
+                hint = ("这是本任务最后一轮" if remaining == 0
+                        else f"本任务还剩 {remaining} 轮")
+                self.messages.append({
+                    "role": "user",
+                    "content": (f"【系统提示】{hint}，达到上限任务会被强制结束。"
+                                "如果无法在剩余轮次内完成，请立即收束：汇总当前进度、"
+                                "如实说明哪些没做完，不要开启新的多步骤操作。")})
+                self._log(f"⏳ 轮次提醒：{hint}，已提醒模型准备收束")
 
             # 如果没有传入 LLM，创建一个本机 Ollama 客户端
             if self.llm is None:
