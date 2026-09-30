@@ -4,7 +4,7 @@
 AI 看屏幕、动鼠标键盘、验证结果，一步步把事办完。模型可走本机 Ollama（数据不出本机），
 也可走云端 API（免装本地模型）。
 
-- 许可证：[MIT](LICENSE)　·　平台：Windows 10/11　·　当前版本：v2.0.14（`gui.py` 的 `APP_VERSION`）
+- 许可证：[MIT](LICENSE)　·　平台：Windows 10/11　·　当前版本：v2.0.15（`gui.py` 的 `APP_VERSION`）
 - 开发实测环境：Python 3.14 / Windows 10（更低版本未实测，依赖均为纯 pip 安装）
 - 测试：核心套件 **231 passed / 7 xfailed**（2026-09-30，命令见下方「测试」节，可在仓库复核）
 
