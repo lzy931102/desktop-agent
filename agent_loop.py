@@ -982,6 +982,7 @@ class DesktopAgent:
         self._image_located = False   # locate_on_screen 是否成功（供旧逻辑兼容）
         self._last_locate_failed = False  # 上一次 locate_on_screen 失败 → 拦截下一次盲点击
         self._stop_requested = False  # 用户请求停止
+        self._empty_reply = False     # 本任务模型返回过空回复（T8：history 状态机优先读它）
         self._medium_notified = set()  # medium 风险已提示过的来源（插件名/工具名），一次会话只提示首次
         self.on_tool_call = None      # 回调：工具调用前
         self.on_tool_result = None    # 回调：工具调用后
@@ -1149,6 +1150,7 @@ class DesktopAgent:
     def run(self, user_input: str) -> str:
         """任务入口：包装历史记录与审计生命周期，循环体在 _run_loop"""
         self.messages.append({"role": "user", "content": user_input})
+        self._empty_reply = False  # 逐任务复位：上一任务的空回复不影响本任务定态
         task_id = self.history.start(user_input) if self.history else None
         start = time.time()
         if self.auditor:
@@ -1162,9 +1164,13 @@ class DesktopAgent:
             self._log(f"[错误] {result}")
         finally:
             if task_id and self.history:
+                # T8：空回复显式打标——"模型未返回有效内容"不含任何失败词，
+                # 纯文本匹配会把"什么都没做"记成 success（2026-09-30 任务
+                # 0f38d020 实录）。标记优先于文本判定。
                 status = ("error" if error else
                           "stopped" if "停止" in (result or "") else
                           "max_turns" if "最大轮次" in (result or "") else
+                          "empty_reply" if self._empty_reply else
                           "failed" if final_reply_failed(result) else
                           "success")
                 self.history.end(task_id, status, result or "",
@@ -1236,6 +1242,8 @@ class DesktopAgent:
                 if content:
                     self._log(f"[助手] {content}")
                     return content
+                # T8：空回复显式打标（只靠返回文本匹配会漏——见 run() 定态处）
+                self._empty_reply = True
                 return "模型未返回有效内容，请重试或换一种说法描述任务。"
 
             for tc in tool_calls:

@@ -2071,7 +2071,7 @@ class AgentGUI:
             for r in hist:
                 status_key = {"success": "done", "error": "failed",
                               "failed": "failed", "stopped": "stopped",
-                              "max_turns": "failed",
+                              "max_turns": "failed", "empty_reply": "failed",
                               "running": "running"}.get(r.get("status", ""), "draft")
                 if status_key == "running":
                     continue  # 本会话区已展示活任务，历史里残留的 running 是上次异常退出
