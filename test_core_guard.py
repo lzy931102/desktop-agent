@@ -554,3 +554,180 @@ def test_scheduler_daily_before_time_not_missed(tmp_path):
     assert not missed_seen
     statuses = {t["task"]: t["last_status"] for t in s.load()}
     assert statuses == {"晨报": "", "坏时间": ""}
+
+
+# ==================== core/verify：click 校验分级（REL-P1-4，任务 17） ====================
+
+from core import verify as core_verify
+
+
+class _FakeEl:
+    """UIAElementInfo / 原始 COM 元素桩：control_type + runtime_id + name"""
+
+    def __init__(self, control_type, rid, name=""):
+        self.control_type = control_type
+        self._rid = rid
+        self.name = name
+
+    def GetRuntimeId(self):
+        return self._rid
+
+    @property
+    def runtime_id(self):
+        return self._rid
+
+
+class _FakeIUIA:
+    """IUIA 桩：生产代码只调 get_focused_element()"""
+
+    def __init__(self, focused=None):
+        self._focused = focused
+
+    def get_focused_element(self):
+        return self._focused
+
+
+@pytest.fixture
+def no_sleep(monkeypatch):
+    """校验里的 1.2s 反应窗口与重试退避全部归零（不真等）"""
+    monkeypatch.setattr(core_verify.time, "sleep", lambda s: None)
+
+
+def test_capture_click_target_classifies(monkeypatch):
+    """点击前目标分类：控件白名单 → critical；面板/空白 → plain；
+    UIA 查询异常 → unavailable（回退像素并标注弱校验）。"""
+    from pywinauto.uia_element_info import UIAElementInfo
+
+    monkeypatch.setattr(UIAElementInfo, "from_point",
+                        classmethod(lambda cls, x, y: _FakeEl("Button", [42], "确定")))
+    monkeypatch.setattr("pywinauto.uia_defines.IUIA",
+                        lambda: _FakeIUIA(_FakeEl("Button", [1])))
+    status, info = core_verify.capture_click_target(10, 20)
+    assert status == "critical"
+    assert info["runtime_id"] == [42] and info["name"] == "确定"
+    assert info["was_focused"] is False          # 焦点在别的控件上
+
+    # 点击前焦点已在目标上：was_focused=True（迁移信号随之不可用）
+    monkeypatch.setattr("pywinauto.uia_defines.IUIA",
+                        lambda: _FakeIUIA(_FakeEl("Button", [42])))
+    _, info2 = core_verify.capture_click_target(10, 20)
+    assert info2["was_focused"] is True
+
+    monkeypatch.setattr(UIAElementInfo, "from_point",
+                        classmethod(lambda cls, x, y: _FakeEl("Pane", [7])))
+    assert core_verify.capture_click_target(10, 20) == ("plain", None)
+
+    monkeypatch.setattr(UIAElementInfo, "from_point",
+                        classmethod(lambda cls, x, y: (_ for _ in ()).throw(OSError("UIPI 拒答"))))
+    status, reason = core_verify.capture_click_target(10, 20)
+    assert status == "unavailable" and "OSError" in reason
+
+
+def test_verify_click_strong_matrix(monkeypatch, no_sleep):
+    """强校验判定矩阵：强两路 / 确定落空 / 弱通过 / 回退档（设计文档第 5 节）"""
+    from pywinauto.uia_element_info import UIAElementInfo
+
+    pre = {"x": 1, "y": 2, "runtime_id": [42], "control_type": "Button",
+           "name": "确定", "was_focused": False}
+
+    # 强信号一：目标元素被替换（典型：确认弹窗关闭）
+    monkeypatch.setattr(UIAElementInfo, "from_point",
+                        classmethod(lambda cls, x, y: _FakeEl("Pane", [999])))
+    monkeypatch.setattr("pywinauto.uia_defines.IUIA",
+                        lambda: _FakeIUIA(_FakeEl("Button", [1])))
+    ok, detail, tier = core_verify.verify_click_strong(pre, None)
+    assert (ok, tier) == (True, "strong") and "消失/被替换" in detail
+
+    # 强信号二：焦点迁移到目标控件
+    monkeypatch.setattr(UIAElementInfo, "from_point",
+                        classmethod(lambda cls, x, y: _FakeEl("Button", [42])))
+    monkeypatch.setattr("pywinauto.uia_defines.IUIA",
+                        lambda: _FakeIUIA(_FakeEl("Button", [42])))
+    ok, detail, tier = core_verify.verify_click_strong(pre, None)
+    assert (ok, tier) == (True, "strong") and "焦点" in detail
+
+    # 元素原样 + 界面在动（动画/计时器）→ 弱通过：不作为落地证据，不触发重试
+    monkeypatch.setattr("pywinauto.uia_defines.IUIA",
+                        lambda: _FakeIUIA(_FakeEl("Button", [1])))
+    monkeypatch.setattr(core_verify, "_pixel_changed",
+                        lambda img, t=0.004: (True, "界面已变化"))
+    ok, detail, tier = core_verify.verify_click_strong(pre, None)
+    assert (ok, tier) == (True, "weak") and "弱校验" in detail
+
+    # 元素原样 + 界面无变化 → 确定落空 → fail（交既定重试策略）
+    monkeypatch.setattr(core_verify, "_pixel_changed",
+                        lambda img, t=0.004: (False, "界面无变化"))
+    ok, detail, tier = core_verify.verify_click_strong(pre, None)
+    assert (ok, tier) == (False, "fail") and "确定落空" in detail
+
+    # after 阶段元素断言不可用 → 回退像素档并标注弱校验（回退档里像素失败也判失败）
+    monkeypatch.setattr(UIAElementInfo, "from_point",
+                        classmethod(lambda cls, x, y: (_ for _ in ()).throw(OSError("查询失败"))))
+    monkeypatch.setattr(core_verify, "_pixel_changed",
+                        lambda img, t=0.004: (True, "界面已变化"))
+    ok, detail, tier = core_verify.verify_click_strong(pre, None)
+    assert (ok, tier) == (True, "weak") and "回退" in detail
+    monkeypatch.setattr(core_verify, "_pixel_changed",
+                        lambda img, t=0.004: (False, "界面无变化"))
+    ok, detail, tier = core_verify.verify_click_strong(pre, None)
+    assert (ok, tier) == (False, "fail") and "回退" in detail
+
+
+def test_runtime_id_handles_both_shapes():
+    """实机回归（任务 17）：runtime id 在原始 COM 元素（GetRuntimeId 方法）与
+    UIAElementInfo 包装对象（runtime_id 属性）两种形态上都取得——修复前包装
+    形态 AttributeError 被吞成 None，critical 分类整体失效；COMError 哨兵 0
+    视为无信号。"""
+    class _Raw:
+        def GetRuntimeId(self):
+            return (42, 7)
+
+    class _Wrapped:
+        @property
+        def runtime_id(self):
+            return (42, 7)
+
+    class _SentinelZero:
+        @property
+        def runtime_id(self):
+            return 0
+
+    class _Dead:
+        pass
+
+    assert core_verify._runtime_id(_Raw()) == [42, 7]
+    assert core_verify._runtime_id(_Wrapped()) == [42, 7]
+    assert core_verify._runtime_id(_SentinelZero()) is None
+    assert core_verify._runtime_id(_Dead()) is None
+
+
+def test_pixel_changed_basics(monkeypatch, no_sleep):
+    """像素比对本体：同图判无变化、异图判有变化、截图异常返回 None"""
+    from PIL import Image
+
+    def _img(color):
+        return Image.new("L", (256, 144), color)
+
+    before = _img(30)
+    monkeypatch.setattr(core_verify.pyautogui, "screenshot", lambda: _img(30))
+    assert core_verify._pixel_changed(before) == (False, "界面无变化（差异 0.0%）")
+    monkeypatch.setattr(core_verify.pyautogui, "screenshot", lambda: _img(220))
+    ok, detail = core_verify._pixel_changed(before)
+    assert ok is True and "100.0%" in detail
+
+    def _boom():
+        raise RuntimeError("截图失败")
+    monkeypatch.setattr(core_verify.pyautogui, "screenshot", _boom)
+    ok, detail = core_verify._pixel_changed(before)
+    assert ok is None and "跳过" in detail
+
+
+def test_verify_click_non_critical_unchanged(monkeypatch, no_sleep):
+    """回归：非关键点击的旧校验路径行为不变（像素证据决定通过/失败）"""
+    monkeypatch.setattr(core_verify, "_pixel_changed",
+                        lambda img, t=0.004: (False, "界面无变化（差异 0.0%）"))
+    ok, detail = core_verify.verify_click(None)
+    assert ok is False and "点击可能未生效" in detail
+    monkeypatch.setattr(core_verify, "_pixel_changed",
+                        lambda img, t=0.004: (True, "界面已变化（差异 2.0%）"))
+    assert core_verify.verify_click(None) == (True, "界面已变化（差异 2.0%）")

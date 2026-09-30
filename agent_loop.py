@@ -35,7 +35,7 @@ from core.approval import AutoDenyPolicy
 from core.audit import AuditLogger
 from core.feishu import send_feishu_message as _feishu_send
 from core.history import TaskHistory
-from core.retry import run_with_retry
+from core.retry import is_failed_result, run_with_retry
 from core.settings import MAX_TURNS, PROVIDER_ENUM, Settings, resolve_api_key, validate_public_https
 from core.verify import check_message_sent
 
@@ -1003,21 +1003,52 @@ class DesktopAgent:
             return _wait_tool(args, lambda: self._stop_requested)
         retryable = risk != "high" and guard.is_retryable(name)
 
-        # click 前截图供"动作后校验"做界面变化对比
+        # click 前截图供"动作后校验"做界面变化对比；同时采集 UIA 点击目标：
+        # 点在控件上（Button/MenuItem 等）走强校验，点在空白处维持像素校验（REL-P1-4）
         before_img = None
+        click_pre = ("plain", None)
         if name == "click":
             try:
                 before_img = pyautogui.screenshot()
             except Exception:
                 before_img = None
+            try:
+                click_pre = core_verify.capture_click_target(
+                    args.get("x", 0), args.get("y", 0))
+            except Exception:
+                click_pre = ("unavailable", "采集异常")
+        critical = click_pre[0] == "critical"
 
-        result, attempts, final_ok = run_with_retry(
-            lambda: TOOL_FUNCTIONS[name](args), name, retryable,
-            auditor=self.auditor,
-            on_retry=lambda attempt, mx, wait: self._on_retry(name, attempt, mx))
+        if critical:
+            # 关键点击：强校验放进重试环——"确定落空"（控件无变化且像素无变化）
+            # 才自动重试，此时重试无双击/重复提交风险；弱校验结果带标注返回、
+            # 不自动重试（防重复提交），判断交回模型
+            def _critical_click():
+                r = TOOL_FUNCTIONS["click"](args)
+                if is_failed_result(r):
+                    return r
+                ok, detail, tier = core_verify.verify_click_strong(
+                    click_pre[1], before_img)
+                if self.auditor:
+                    self.auditor.emit("verify", tool="click", ok=ok,
+                                      detail=detail)
+                if not ok:
+                    return f"错误: {detail}"
+                return r if tier == "strong" else f"{r}（{detail}）"
 
-        # 动作后校验（仅首次即成功的关键动作；重试路径已含在失败判定里）
-        if final_ok and attempts >= 1:
+            result, attempts, final_ok = run_with_retry(
+                _critical_click, name, retryable,
+                auditor=self.auditor,
+                on_retry=lambda attempt, mx, wait: self._on_retry(name, attempt, mx))
+        else:
+            result, attempts, final_ok = run_with_retry(
+                lambda: TOOL_FUNCTIONS[name](args), name, retryable,
+                auditor=self.auditor,
+                on_retry=lambda attempt, mx, wait: self._on_retry(name, attempt, mx))
+
+        # 动作后校验（仅首次即成功的关键动作；重试路径已含在失败判定里）。
+        # 关键点击已在重试环内强校验过，这里跳过避免重复校验
+        if final_ok and attempts >= 1 and not critical:
             ok, detail = self._verify_action(name, args, result, before_img)
             if ok is not None:
                 if self.auditor:
@@ -1025,6 +1056,9 @@ class DesktopAgent:
                 if not ok:
                     result = f"{result}（校验未通过: {detail}）"
                     self._log(f"[校验] {name}: {detail}")
+                elif name == "click" and click_pre[0] == "unavailable":
+                    result = f"{result}（弱校验: UIA 不可用，仅像素比对）"
+                    self._log("[校验] click: 弱校验（UIA 不可用，仅像素比对）")
 
         if attempts > 1:
             self._log(f"[重试] {name} 共执行 {attempts} 次，"

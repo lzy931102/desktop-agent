@@ -457,3 +457,111 @@ def test_all_network_call_points_disable_trust_env():
         assert must in scanned, f"策略扫描漏掉了 {must}"
     assert configured >= 5, f"合规 Session 出口仅 {configured} 处，扫描可能失效"
     assert not problems, "存在未按统一策略出网的调用点：\n" + "\n".join(problems)
+
+
+# ==================== click 校验分级接线（REL-P1-4，任务 17） ====================
+
+from core import retry as core_retry
+
+
+def _click_agent(tmp_path, monkeypatch, capture, strong_results):
+    """构造关键点击测试环境：UIA 采集与强校验全部打桩，click 不碰真鼠标。
+
+    capture: capture_click_target 的返回值；strong_results: 强校验按次序返回值。
+    返回 (agent, logs, tmp_path)。
+    """
+    monkeypatch.setattr(agent_loop, "TOOL_FUNCTIONS",
+                        {"click": lambda args: "clicked at (5, 5)"})
+    monkeypatch.setattr(agent_loop.pyautogui, "screenshot", lambda: None)
+    monkeypatch.setattr(agent_loop.core_verify, "capture_click_target",
+                        lambda x, y: capture)
+    seq = list(strong_results)
+
+    def fake_strong(info, before_img, threshold=0.004):
+        return seq.pop(0) if len(seq) > 1 else seq[0]
+    monkeypatch.setattr(agent_loop.core_verify, "verify_click_strong", fake_strong)
+    monkeypatch.setattr(core_retry.time, "sleep", lambda s: None)
+
+    logs = []
+    auditor = AuditLogger(log_dir=tmp_path)
+    agent = DesktopAgent(llm=None, auditor=auditor, approval=AutoDenyPolicy())
+    agent.on_log = logs.append
+    return agent, logs, tmp_path
+
+
+def test_critical_click_verify_fail_triggers_retry(tmp_path, monkeypatch):
+    """关键点击确定落空（控件无变化且像素无变化）→ 判失败并触发既定重试策略：
+    第二次尝试强通过即收敛，审计链留 retry + verify 事件。"""
+    capture = ("critical", {"x": 5, "y": 5, "runtime_id": [42],
+                            "control_type": "Button", "name": "确定",
+                            "was_focused": False})
+    agent, logs, tmp_path = _click_agent(
+        tmp_path, monkeypatch, capture,
+        [(False, "强校验失败：测试桩", "fail"),
+         (True, "强校验通过：测试桩", "strong")])
+    result = _run(agent, [
+        _tool_call("c1", "click", {"x": 5, "y": 5}),
+        _final(),
+    ])
+    assert result == "任务完成"
+    assert "错误" not in "".join(logs) or any("重试" in m for m in logs)
+    entries = _read_audit(tmp_path)
+    retries = [e for e in entries if e["type"] == "retry"]
+    verifies = [e for e in entries if e["type"] == "verify"]
+    assert len(retries) == 1 and retries[0]["tool"] == "click"   # 落空后重试了一次
+    assert [v["ok"] for v in verifies] == [False, True]          # 两次校验都进链
+
+
+def test_critical_click_weak_pass_no_retry(tmp_path, monkeypatch):
+    """元素原样但界面在动（动画/计时器）→ 弱校验通过：不重试（防重复提交），
+    标注随工具结果返回给模型。"""
+    capture = ("critical", {"x": 5, "y": 5, "runtime_id": [42],
+                            "control_type": "Button", "name": "发送",
+                            "was_focused": False})
+    agent, logs, tmp_path = _click_agent(
+        tmp_path, monkeypatch, capture,
+        [(True, "弱校验：目标控件无变化，仅界面像素有变化", "weak")])
+    result = _run(agent, [
+        _tool_call("c1", "click", {"x": 5, "y": 5}),
+        _final(),
+    ])
+    assert result == "任务完成"
+    assert "弱校验" in "".join(logs)
+    entries = _read_audit(tmp_path)
+    assert not [e for e in entries if e["type"] == "retry"]      # 无重试
+    verifies = [e for e in entries if e["type"] == "verify"]
+    assert len(verifies) == 1 and verifies[0]["ok"] is True
+
+
+def test_plain_click_keeps_pixel_verify(tmp_path, monkeypatch):
+    """回归：点在空白处（plain）走旧像素校验路径，不触发强校验"""
+    calls = {"strong": 0, "old": 0}
+
+    def fake_old(before_img, threshold=0.004):
+        calls["old"] += 1
+        return True, "界面已变化（差异 2.0%）"
+
+    capture = ("plain", None)
+    monkeypatch.setattr(agent_loop, "TOOL_FUNCTIONS",
+                        {"click": lambda args: "clicked at (5, 5)"})
+    monkeypatch.setattr(agent_loop.pyautogui, "screenshot", lambda: object())
+    monkeypatch.setattr(agent_loop.core_verify, "capture_click_target",
+                        lambda x, y: capture)
+    monkeypatch.setattr(agent_loop.core_verify, "verify_click", fake_old)
+
+    def fake_strong(info, before_img, threshold=0.004):
+        calls["strong"] += 1
+        return True, "强校验", "strong"
+    monkeypatch.setattr(agent_loop.core_verify, "verify_click_strong", fake_strong)
+    monkeypatch.setattr(core_retry.time, "sleep", lambda s: None)
+
+    logs = []
+    agent = DesktopAgent(llm=None, auditor=AuditLogger(log_dir=tmp_path),
+                         approval=AutoDenyPolicy())
+    agent.on_log = logs.append
+    result = _run(agent, [
+        _tool_call("c1", "click", {"x": 5, "y": 5}),
+        _final(),
+    ])
+    assert result == "任务完成"
+    assert calls["old"] == 1 and calls["strong"] == 0            # 走旧路径，未进强校验

@@ -6,7 +6,7 @@ AI 看屏幕、动鼠标键盘、验证结果，一步步把事办完。模型�
 
 - 许可证：[MIT](LICENSE)　·　平台：Windows 10/11　·　当前版本：v2.0.14（`gui.py` 的 `APP_VERSION`）
 - 开发实测环境：Python 3.14 / Windows 10（更低版本未实测，依赖均为纯 pip 安装）
-- 测试：核心套件 **223 passed / 7 xfailed**（2026-09-30，命令见下方「测试」节，可在仓库复核）
+- 测试：核心套件 **231 passed / 7 xfailed**（2026-09-30，命令见下方「测试」节，可在仓库复核）
 
 ## 功能特性
 
@@ -104,12 +104,12 @@ python gui.py --debug-open settings       # 直接打开面板：settings / sche
 python -m pytest test_core_guard.py test_plugin_system.py test_plugin_boundary.py \
        test_skill_system.py test_agent_loop_guard.py test_vision_backend.py \
        test_phone_bridge.py -q
-# 实测：223 passed, 7 xfailed（7 个 xfailed 是 guard 已拍板不修的绕过变体，
+# 实测：231 passed, 7 xfailed（7 个 xfailed 是 guard 已拍板不修的绕过变体，
 # 用 xfail 固化防回归，理由见 test_core_guard.py 各用例 docstring）
 
 # 全量逻辑测试（含 test_ollama_stream.py 的假响应流测试，不依赖真实 Ollama、不动鼠标）：
 python -m pytest -q
-# 实测：234 passed, 7 xfailed
+# 实测：242 passed, 7 xfailed
 ```
 
 `e2e/` 下的 21 个脚本是**会真动鼠标、真开应用**的一次性桌面操控/端到端脚本，

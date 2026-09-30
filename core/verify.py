@@ -2,7 +2,10 @@
 
 可验证的动作：
 - open_app  → 枚举窗口，确认应用窗口已出现
-- click     → 前后截图对比，确认界面发生了变化（best-effort，无变化仅警告）
+- click     → 前后截图对比，确认界面发生了变化（best-effort，无变化仅警告）；
+              点在控件上（Button/MenuItem 等，REL-P1-4）走强校验：
+              UIA 断言目标元素/焦点变化，确定落空才触发重试，
+              分级与回退见 verify_click_strong 与 docs/verify_click收紧设计-2026-09-30.md
 - clipboard_write → 回读剪贴板比对
 - screenshot / 保存文件 → 检查文件是否存在
 其余动作（输入、按键等）没有可靠的本地验证手段，标记 skip 不阻塞流程。
@@ -71,10 +74,10 @@ def _small_gray(img):
     return img.convert("L").resize((256, 144))
 
 
-def verify_click(before_img, threshold: float = 0.004) -> tuple:
-    """点击后截图对比：界面有变化即通过（best-effort）"""
+def _pixel_changed(before_img, threshold: float = 0.004) -> tuple:
+    """点击前后截图对比。返回 (ok, detail)：ok ∈ True/False/None，
+    None 表示比对自身失败（截图/比对异常），由调用方决定兜底方式。"""
     try:
-        time.sleep(1.2)  # 给界面反应时间
         after = pyautogui.screenshot()
         diff = ImageChops.difference(_small_gray(before_img), _small_gray(after))
         hist = diff.histogram()
@@ -83,9 +86,146 @@ def verify_click(before_img, threshold: float = 0.004) -> tuple:
         ratio = changed / max(total, 1)
         if ratio >= threshold:
             return True, f"界面已变化（差异 {ratio:.1%}）"
-        return False, f"界面无变化（差异 {ratio:.1%}），点击可能未生效"
+        return False, f"界面无变化（差异 {ratio:.1%}）"
     except Exception as e:
-        return True, f"校验跳过: {e}"  # 校验自身失败不阻塞主流程
+        return None, f"像素比对跳过: {e}"
+
+
+def verify_click(before_img, threshold: float = 0.004) -> tuple:
+    """点击后截图对比：界面有变化即通过（best-effort，非关键点击路径）"""
+    time.sleep(1.2)  # 给界面反应时间
+    ok, detail = _pixel_changed(before_img, threshold)
+    if ok is None:
+        return True, detail  # 校验自身失败不阻塞主流程
+    if ok:
+        return True, detail
+    return False, f"{detail}，点击可能未生效"
+
+
+# ---- 关键点击强校验（REL-P1-4，docs/verify_click收紧设计-2026-09-30.md） ----
+
+# 点下去应当产生可观测效果的目标控件类型；之外的（Pane/Document/空白等）
+# 没有可靠的控件级断言，维持像素校验
+_CRITICAL_CONTROL_TYPES = {"Button", "MenuItem", "CheckBox", "RadioButton",
+                           "Hyperlink", "ListItem", "TabItem", "TreeItem",
+                           "DataItem"}
+
+
+def _runtime_id(el):
+    """UIA runtime id 统一成 list（跨查询可比较）；取不到返回 None（无信号）。
+
+    el 兼容两种形态：原始 IUIAutomationElement（GetRuntimeId 方法）与
+    UIAElementInfo 包装对象（runtime_id 属性，COMError 时回落 0——按无效处理）。
+    实机教训：方法在原始元素上，包装对象没有——两种形态都必须能取（任务 17）。
+    """
+    try:
+        rid = el.GetRuntimeId()              # 原始 COM 元素
+    except AttributeError:
+        try:
+            rid = el.runtime_id              # UIAElementInfo 包装对象
+        except Exception:
+            return None
+    except Exception:
+        return None
+    if rid is None or rid == 0:              # 0 是属性层 COMError 的哨兵值
+        return None
+    try:
+        return list(rid)
+    except TypeError:
+        return None
+
+
+def capture_click_target(x, y):
+    """click 前采集点击目标（UIA ElementFromPoint），决定校验档位。
+
+    返回 (status, info)：
+    - ("critical", info)   点在可观测控件上 → 走强校验（verify_click_strong）
+    - ("plain", None)      非控件目标 → 维持像素校验（现行为）
+    - ("unavailable", 原因) UIA 不可用/查询失败 → 像素校验并标注弱校验
+
+    pywinauto API 面刻意最小化：只用 ElementFromPoint + GetFocusedElement +
+    runtime_id（见设计文档第 3 节）。
+    """
+    try:
+        from pywinauto.uia_element_info import UIAElementInfo
+        from pywinauto.uia_defines import IUIA
+        el = UIAElementInfo.from_point(x, y)
+        if el is None or el.control_type not in _CRITICAL_CONTROL_TYPES:
+            return "plain", None
+        rid = _runtime_id(el)
+        if rid is None:
+            return "plain", None
+        try:
+            focused = IUIA().get_focused_element()
+            focused_rid = _runtime_id(focused) if focused else None
+        except Exception:
+            focused_rid = None
+        info = {"x": x, "y": y, "runtime_id": rid,
+                "control_type": el.control_type, "name": el.name or "",
+                "was_focused": focused_rid is not None
+                               and focused_rid == rid}
+        return "critical", info
+    except Exception as e:
+        return "unavailable", f"{type(e).__name__}: {e}"[:80]
+
+
+def verify_click_strong(info: dict, before_img, threshold: float = 0.004) -> tuple:
+    """关键点击的强校验。判定矩阵见 docs/verify_click收紧设计-2026-09-30.md 第 5 节：
+
+    1. 任一强信号成立 → (True, 强校验…, "strong")：目标元素消失/被替换
+       （如确认弹窗关闭）或键盘焦点迁移到目标控件（对动画免疫）；
+    2. 强信号均不成立 + 像素无变化 → (False, …, "fail")：确定落空，
+       交由既定重试策略（此时重试无双击风险——第一次什么都没触发）；
+    3. 强信号均不成立 + 像素有变化 → (True, 弱校验…, "weak")：可能来自
+       动画/计时器，不自动重试（防重复提交），标注交回模型；
+    4. after 阶段元素断言不可用 → 回退纯像素判定并标注弱校验。
+    """
+    time.sleep(1.2)  # 与 verify_click 相同的界面反应窗口
+
+    element_changed = None   # None = after 阶段查询失败（断言不可用）
+    focus_moved = None
+    try:
+        from pywinauto.uia_element_info import UIAElementInfo
+        el2 = UIAElementInfo.from_point(info["x"], info["y"])
+        rid2 = _runtime_id(el2) if el2 is not None else None
+        element_changed = None if rid2 is None else rid2 != info["runtime_id"]
+    except Exception:
+        pass
+    if info["was_focused"]:
+        focus_moved = False  # 点击前焦点已在目标上：无迁移信号可言
+    else:
+        try:
+            from pywinauto.uia_defines import IUIA
+            focused = IUIA().get_focused_element()
+            focused_rid = _runtime_id(focused) if focused else None
+            focus_moved = (focused_rid is not None
+                           and focused_rid == info["runtime_id"])
+        except Exception:
+            pass
+
+    if element_changed or focus_moved:
+        signal = ("目标元素已消失/被替换" if element_changed
+                  else "键盘焦点已迁移到目标控件")
+        return True, f"强校验通过：{signal}", "strong"
+
+    pixel_ok, pixel_detail = _pixel_changed(before_img, threshold)
+
+    if element_changed is None:
+        # 元素级断言不可用 → 回退现行为（像素判定）并标注弱校验（设计 5.4）
+        if pixel_ok:
+            return True, (f"弱校验（UIA 元素断言不可用，回退像素比对）："
+                          f"{pixel_detail}"), "weak"
+        if pixel_ok is None:
+            return True, "弱校验（UIA 与像素比对均不可用，跳过）", "weak"
+        return False, (f"弱校验（UIA 元素断言不可用，回退像素比对）："
+                       f"{pixel_detail}，点击可能未生效"), "fail"
+
+    if pixel_ok:
+        return (True, "弱校验：目标控件无变化，仅界面像素有变化"
+                      "（可能来自动画/计时器，不作为点击落地证据）", "weak")
+    if pixel_ok is None:
+        return True, "弱校验：UIA 无信号且像素比对不可用", "weak"
+    return False, "强校验失败：目标控件无变化且界面无像素变化，点击确定落空", "fail"
 
 
 def verify_file_exists(path: str) -> tuple:
