@@ -72,9 +72,12 @@ RULES = [
 # install_skill 要访问网络并往技能目录写文件，且装进来的 SKILL.md 文本会
 # 注入 AI 的 system prompt（指令注入通道）→ high：走 approval 确认卡，
 # AI 自装与 GUI 手装同权；evaluate() 会在 reason 里附上来源供确认卡展示。
+# open_url 是出网动作（浏览器访问外部站点），与发飞书同级按 medium 记录；
+# 网址本身经 validate_public_url 校验（仅 http/https 公网），无需高危确认。
 TOOL_BASE_RISK = {
     "install_skill": ("high", "安装技能包：访问网络下载内容并写入技能目录，"
                       "技能文本会注入 AI 的系统提示词"),
+    "open_url": ("medium", "打开网址：默认浏览器将访问外部站点"),
 }
 
 

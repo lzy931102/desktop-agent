@@ -129,14 +129,22 @@ def should_show_onboarding(settings, connected: bool) -> bool:
     return str(settings.get("onboarding_choice", "") or "") in ONBOARDING_AUTO_STATES
 
 
-def validate_public_https(url: str) -> tuple:
-    """云端服务地址必须为 https 且解析后不指向内网/环回/保留地址"""
+def validate_public_url(url: str, require_https: bool = True) -> tuple:
+    """外发网址校验：scheme 白名单 + 解析后不得指向内网/环回/保留地址。
+
+    require_https=True 用于云端服务地址（api endpoint）；
+    浏览器打开网址（open_url）传 require_https=False，允许 http 但
+    同样拒绝 localhost/内网/链路本地/保留地址——防止被诱导把浏览器
+    指向内网服务或云元数据地址。
+    """
     try:
         p = urlparse(url)
     except ValueError:
         return False, "URL 无效"
-    if p.scheme != "https":
-        return False, "云端地址必须使用 https"
+    schemes = ("https",) if require_https else ("http", "https")
+    if p.scheme not in schemes:
+        return False, (f"网址必须使用 {'https' if require_https else 'http/https'}"
+                       if require_https else "只支持 http/https 网址")
     host = p.hostname or ""
     if not host:
         return False, "缺少主机名"
@@ -157,8 +165,13 @@ def validate_public_https(url: str) -> tuple:
         ip = ipaddress.ip_address(info[4][0])
         if (ip.is_private or ip.is_loopback or ip.is_reserved
                 or ip.is_link_local or ip.is_multicast or ip.is_unspecified):
-            return False, "云端地址解析到了内网/保留地址，已拒绝"
+            return False, "网址解析到了内网/保留地址，已拒绝"
     return True, ""
+
+
+def validate_public_https(url: str) -> tuple:
+    """云端服务地址必须为 https 且解析后不指向内网/环回/保留地址"""
+    return validate_public_url(url, require_https=True)
 
 
 class Settings:

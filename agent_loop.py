@@ -36,7 +36,9 @@ from core.audit import AuditLogger
 from core.feishu import send_feishu_message as _feishu_send
 from core.history import TaskHistory
 from core.retry import is_failed_result, run_with_retry
-from core.settings import MAX_TURNS, PROVIDER_ENUM, Settings, resolve_api_key, validate_public_https
+from core.settings import (MAX_TURNS, PROVIDER_ENUM, Settings,
+                           resolve_api_key, validate_public_https,
+                           validate_public_url)
 from core.verify import check_message_sent
 
 try:
@@ -582,6 +584,20 @@ TOOLS_SCHEMA = [
     {
         "type": "function",
         "function": {
+            "name": "open_url",
+            "description": "用系统默认浏览器打开网址（http/https）。访问网页一律先用它，一步到位，比先开浏览器再输网址快",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "完整网址，如 https://www.baidu.com"}
+                },
+                "required": ["url"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "analyze_screen",
             "description": "看一眼当前屏幕并回答问题（视觉分析，通常 2~6 秒）。适用于：了解屏幕上有什么、某应用是否打开、界面当前处于什么状态、界面上的文字/按钮写的什么。只回答内容，不返回坐标",
             "parameters": {
@@ -774,6 +790,28 @@ def _open_app(app_name: str):
     return f"opened {app_name}"
 
 
+def _open_url(args):
+    """用系统默认浏览器打开 http/https 公网网址（T6）。
+
+    之前"打开浏览器访问 xx"只能 open_app 绕白名单（浏览器不在清单），
+    退回 win 菜单敲字要烧 4~5 轮——2026-09-30 晚 4 个任务全因此顶格失败。
+    校验复用云端地址的公网判定：拒绝 localhost/内网/保留地址，
+    防止被诱导把浏览器指向内网服务或云元数据地址。本进程不发起网络请求，
+    由 ShellExecute 交给默认浏览器。
+    """
+    url = str(args.get("url", "") or "").strip()
+    if not url:
+        return "错误: 不支持空网址，请传完整 url（含 https://）"
+    ok, why = validate_public_url(url, require_https=False)
+    if not ok:
+        return f"错误: 不支持打开该网址（{why}）"
+    try:
+        os.startfile(url)
+    except OSError as e:
+        return f"错误: 浏览器打开失败 - {e}"
+    return f"opened in default browser: {url}"
+
+
 WAIT_MAX_SECONDS = 60  # wait 上限：模型传 seconds=100000 不能真睡 27 小时
 
 
@@ -812,6 +850,7 @@ TOOL_FUNCTIONS = {
     "locate_on_screen": _locate_on_screen,
     "wait": lambda args: _wait_tool(args),
     "open_app": lambda args: _open_app(args["app_name"]),
+    "open_url": lambda args: _open_url(args),
     "get_mouse_position": lambda args: (lambda pos: f"mouse at {pos}")(pyautogui.position()),
     "get_screen_size": lambda args: (lambda sz: f"screen size {sz}")(pyautogui.size()),
     "analyze_screen": lambda args: analyze_screen(args["question"]),
@@ -871,6 +910,8 @@ SYSTEM_PROMPT = """你是一个电脑操作助手，通过工具帮用户完成�
   点开菜单后再查一次，能列出菜单弹窗里的项（如 格式→字体）
 - click_ui_element(window_title, name): 按名称点击控件（含打开中的菜单项）——最可靠的点击方式
 - open_app(app_name): 打开应用（notepad/calc/cmd/explorer/paint/记事本/计算器等）
+- open_url(url): 用默认浏览器打开网址（http/https，仅限公网网址）。
+  「打开浏览器/访问某网页」类任务一律先用它，一步到位不用再敲开始菜单
 - click(x, y): 点击屏幕坐标；type_text(text): 在光标处输入文本（支持中文，自动粘贴）
 - press_key(key) / hotkey(keys): 按键与组合键；scroll(clicks): 滚动；move_to(x, y): 移动鼠标
 - clipboard_read() / clipboard_write(text): 读写剪贴板
@@ -881,9 +922,14 @@ SYSTEM_PROMPT = """你是一个电脑操作助手，通过工具帮用户完成�
 - wait(seconds): 等待；screenshot(path): 截图保存
 
 标准工作流（重要）：
-1. 了解环境：先 list_windows 看有哪些窗口；需要目标应用时先 open_app 或 focus_window 把它切到前台
+1. 了解环境：先 list_windows 看有哪些窗口；需要目标应用时先 open_app 或 focus_window 把它切到前台；
+   要访问网页直接 open_url(url)，不要先开浏览器再输网址
 2. 操作控件：list_ui_elements 查看目标窗口的控件名称 → click_ui_element 按名称点击。
-   这比猜坐标可靠得多，是首选
+   这比猜坐标可靠得多，是首选。
+   【浏览器例外（T11 实测）】目标窗口是 Chrome/Edge/Firefox 等浏览器时，禁止用
+   list_ui_elements / click_ui_element——浏览器控件树枚举单次可达 2 分钟且页面控件名
+   不稳定。改用 analyze_screen 看懂页面后直接 click(x, y) 坐标点击：网页是动态渲染
+   界面，视觉识别比 UIA 更快也更可靠
 3. 看懂界面：analyze_screen 通常几秒就回，需要理解屏幕内容时可用；
    「有哪些窗口/应用」用 list_windows，「有哪些控件」用 list_ui_elements（点开菜单后可查菜单项），
    这两个比看屏更精确，能用就优先用
