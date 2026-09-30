@@ -140,8 +140,10 @@ python -m PyInstaller DesktopAgent.spec --noconfirm
 | 系统托盘 | `pystray`（懒加载，缺失自动降级） |
 | 打包 | PyInstaller（`DesktopAgent.spec`，含 pywinauto/comtypes 整体收集） |
 
-> `requirements.txt` 里的 `openai`、`opencv-python` 为早期遗留依赖，当前主链路未 import；
-> 待后续任务清理。`segno`（二维码）服务于 `phone_bridge/`。
+> `requirements.txt` 依赖说明（2026-09-30 复盘核准）：`openai` 是**云端模式必需**——
+> 智谱/DeepSeek/OpenAI/通义四家预设全部经 OpenAI 兼容客户端调用（`agent_loop.py`
+> 的 `_create_client`）；`opencv-python` 主链路未 import，仅 e2e/ 下 5 个一次性
+> 脚本使用。`segno`（二维码）服务于 `phone_bridge/`。
 
 ## 项目结构
 

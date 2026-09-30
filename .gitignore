@@ -47,9 +47,12 @@ excel_screenshot.png
 wps_screenshot.png
 
 # 子目录
-# agent/ 是旧架构遗留目录（待任务 14 清理），整体不入库；
-# 须放在上面的 !**/__init__.py 之后，否则其内部的 __init__.py 会被重新放行
+# agent/ 是旧架构遗留目录（已按任务 14 归档至 archive/agent-v1-残留/），
+# 规则保留防复发；须放在上面的 !**/__init__.py 之后，否则其内部的 __init__.py 会被重新放行
 agent/
+
+# 测试缓存（pytest 运行时生成）
+.pytest_cache/
 
 # PyInstaller 打包产物
 build/

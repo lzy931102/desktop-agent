@@ -2,12 +2,14 @@
 # 固定版本会让新 Python（3.13/3.14）源码安装被旧包卡死，
 # 且 pillow 10.4.0 有 17 条在案漏洞通告（修复于 12.3.0）。
 pyautogui>=0.9.54
+# opencv-python：主链路未 import，仅 e2e/ 下 5 个一次性脚本使用
 opencv-python>=4.10.0.84
 pillow>=12.3.0
 customtkinter>=5.2.2
 requests>=2.31.0
 pyperclip>=1.8.2
 pywinauto>=0.6.8
+# openai：云端模式必需——四家服务商预设全部经 OpenAI 兼容客户端调用
 openai>=1.30.0
 pystray>=0.19.5
 segno>=1.6.6
