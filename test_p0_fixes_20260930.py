@@ -124,7 +124,8 @@ def test_no_hint_when_turns_are_plentiful(stub_tools):
 
 @pytest.fixture
 def fake_dns(monkeypatch):
-    """域名解析桩：baidu → 公网；internal.test → 内网；localhost → 环回"""
+    """域名解析桩（服务端请求路径 validate_public_https 的 check_dns=True 用）：
+    baidu → 公网；internal.test → 内网；localhost → 环回"""
     import socket as socket_mod
 
     def fake_getaddrinfo(host, *a, **kw):
@@ -150,21 +151,37 @@ def test_validate_public_url_allows_http_rejects_private(fake_dns):
                 "http://169.254.169.254/latest/meta-data/"):
         ok, _ = validate_public_url(bad, require_https=False)
         assert not ok, bad
-    # 域名解析到内网同样拒绝（防 localtest.me 类绕过）
-    ok, _ = validate_public_url("http://internal.test/", require_https=False)
+    # 本地主机名模式直接拒绝（无 DNS 模式下的兜底）
+    for bad in ("http://localhost:8080/", "http://router.local/",
+                "http://nas.internal/"):
+        ok, _ = validate_public_url(bad, require_https=False, check_dns=False)
+        assert not ok, bad
+
+
+def test_browser_open_skips_dns_check_server_path_keeps_it(fake_dns):
+    """2026-10-01 实测：系统 DNS 把 github.com 指向 127.0.0.1（拦截策略）而
+    浏览器经 DoH/代理可达——浏览器路径不做 DNS 预校验（避免误杀），
+    服务端请求路径（云端 API/飞书 webhook）保留 DNS 级校验"""
+    # 浏览器路径（check_dns=False）：域名不做本进程解析判定
+    ok, why = validate_public_url("http://github.com/trending",
+                                  require_https=False, check_dns=False)
+    assert ok, why
+    # 同一域名走服务端语义（check_dns=True）：解析到内网仍然拒绝
+    ok, _ = validate_public_url("http://internal.test/",
+                                require_https=False, check_dns=True)
     assert not ok
 
 
 def test_open_url_rejects_then_opens_public(monkeypatch, fake_dns):
     opened = []
     monkeypatch.setattr(agent_loop.os, "startfile", lambda u: opened.append(u))
-    # 内网/环回拒绝且不触发浏览器
+    # 字面量内网/环回/本地主机名拒绝且不触发浏览器
     for bad in ("http://192.168.1.5/", "http://localhost:8080/",
-                "file:///C:/Windows/System32/", ""):
+                "http://router.local/", "file:///C:/Windows/System32/", ""):
         result = _open_url({"url": bad})
         assert result.startswith("错误"), bad
     assert opened == []
-    # 公网 http 网址放行并交给默认浏览器
+    # 公网域名放行并交给默认浏览器（域名不做本进程 DNS 判定）
     result = _open_url({"url": "https://www.baidu.com/s?wd=weather"})
     assert result.startswith("opened in default browser")
     assert opened == ["https://www.baidu.com/s?wd=weather"]
@@ -242,6 +259,25 @@ def test_system_prompt_forbids_uia_on_browsers():
     assert "浏览器例外" in prompt
     assert "Chrome" in prompt
     assert "禁止" in prompt and "list_ui_elements" in prompt
+
+
+def test_browser_uia_block():
+    """T11 结构性约束：浏览器窗口类直接拒绝 UIA 控件操作。2026-10-01 重放实测
+    glm-4-flash 两度无视提示词与工具描述（150 秒/次 × 5），软引导不够——
+    在 agent_vision 助手层硬拦，把 150 秒浪费变成一条即时错误"""
+    from agent_vision import _browser_uia_block
+
+    class _W:
+        def __init__(self, cls):
+            self._cls = cls
+
+        def class_name(self):
+            return self._cls
+
+    for browser_cls in ("Chrome_WidgetWin_1", "MozillaWindowClass"):
+        msg = _browser_uia_block(_W(browser_cls))
+        assert "不支持" in msg, browser_cls
+    assert _browser_uia_block(_W("Notepad")) == ""
 
 
 # ---- T8：空回复不得记为 success ----

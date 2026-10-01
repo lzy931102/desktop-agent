@@ -635,7 +635,7 @@ TOOLS_SCHEMA = [
         "type": "function",
         "function": {
             "name": "list_ui_elements",
-            "description": "列出窗口内可操作控件（按钮/菜单/输入框）及其精确坐标。这是了解一个应用能做什么的最可靠方式，推荐在点击前先列出",
+            "description": "列出窗口内可操作控件（按钮/菜单/输入框）及其精确坐标。这是了解一个应用能做什么的最可靠方式，推荐在点击前先列出。注意：浏览器窗口（Chrome/Edge等）禁止使用本工具——控件树枚举极慢（单次可达2分钟），网页请用 analyze_screen+坐标点击",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -648,7 +648,7 @@ TOOLS_SCHEMA = [
         "type": "function",
         "function": {
             "name": "click_ui_element",
-            "description": "按名称点击窗口内的控件（菜单项/按钮等），最可靠的点击方式。点击前建议先用 list_ui_elements 查看控件名称",
+            "description": "按名称点击窗口内的控件（菜单项/按钮等），最可靠的点击方式。点击前建议先用 list_ui_elements 查看控件名称。注意：浏览器窗口（Chrome/Edge等）禁止使用本工具——单次可达2分钟且网页控件名不稳定，网页请用 analyze_screen 看清后 click(x,y) 坐标点击",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -791,18 +791,20 @@ def _open_app(app_name: str):
 
 
 def _open_url(args):
-    """用系统默认浏览器打开 http/https 公网网址（T6）。
+    """用系统默认浏览器打开 http/https 网址（T6）。
 
     之前"打开浏览器访问 xx"只能 open_app 绕白名单（浏览器不在清单），
     退回 win 菜单敲字要烧 4~5 轮——2026-09-30 晚 4 个任务全因此顶格失败。
-    校验复用云端地址的公网判定：拒绝 localhost/内网/保留地址，
-    防止被诱导把浏览器指向内网服务或云元数据地址。本进程不发起网络请求，
+    校验用无 DNS 模式：浏览器有自己的解析路径（DoH/代理/hosts 工具），
+    本进程系统解析可能给出不同结果（2026-10-01 实测本机 github.com 被系统
+    DNS 指向 127.0.0.1 而浏览器可达，DNS 预校验会误杀）——详见
+    core.settings.validate_public_url 注释。本进程不发起网络请求，
     由 ShellExecute 交给默认浏览器。
     """
     url = str(args.get("url", "") or "").strip()
     if not url:
         return "错误: 不支持空网址，请传完整 url（含 https://）"
-    ok, why = validate_public_url(url, require_https=False)
+    ok, why = validate_public_url(url, require_https=False, check_dns=False)
     if not ok:
         return f"错误: 不支持打开该网址（{why}）"
     try:

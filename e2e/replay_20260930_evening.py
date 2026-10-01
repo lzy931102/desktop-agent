@@ -54,7 +54,47 @@ TASKS = {
           Path.home() / "Desktop" / "cybercat.jpg"),
 }
 
+# 沙箱用例（原晚场 f96ef97a / 3378ee4a 的安全改写，见 docs/任务修改列表 T 系列讨论）：
+# 5 只允许碰 F:\test_downloads（预先放置测试文件）；6 只算账+记事本，不发邮件
+SANDBOX_DIR = Path(r"F:\test_downloads")
+TASKS["5"] = ("沙箱·整理文件夹",
+              "请帮我整理 F:\\test_downloads 这个文件夹。在里面新建三个子文件夹："
+              "图片、文档、压缩包。然后把该文件夹根目录下的 .jpg 和 .png 文件移动到"
+              "'图片'，.pdf 和 .txt 移动到'文档'，.zip 移动到'压缩包'。"
+              "注意：只允许操作 F:\\test_downloads 这个文件夹，其他任何文件夹都不要动。",
+              None)
+TASKS["6"] = ("沙箱·计算器记账",
+              "打开电脑自带的计算器，计算 345 乘以 12 得出结果。然后打开记事本，"
+              "把算式和结果输入进去（345 × 12 = ？）。不需要保存文件，也不需要发送"
+              "邮件或消息，输入完告诉我结果就行。",
+              None)
+
 WATCHDOG_SECONDS = 600
+
+
+def make_sandbox_fixture():
+    """用例 5 的测试夹具：若干假文件（内容随便，扩展名是真的）。
+    幂等：已存在的不重建；每次运行前把上次移动过的归位到根目录"""
+    SANDBOX_DIR.mkdir(parents=True, exist_ok=True)
+    names = {"照片1.jpg": b"\xff\xd8\xff\xe0fake-jpeg",
+             "照片2.png": b"\x89PNG\r\n\x1a\nfake-png",
+             "说明.pdf": b"%PDF-1.4 fake",
+             "笔记.txt": "这是测试文件".encode("utf-8"),
+             "安装包.zip": b"PK\x03\x04fake"}
+    for sub in ("图片", "文档", "压缩包"):
+        (SANDBOX_DIR / sub).mkdir(exist_ok=True)
+        for f in (SANDBOX_DIR / sub).iterdir():
+            f.rename(SANDBOX_DIR / f.name)   # 归位到根目录
+    for name, data in names.items():
+        (SANDBOX_DIR / name).write_bytes(data)
+
+
+def check_sandbox_5():
+    """根目录应只剩三个子文件夹，无散落文件"""
+    leftovers = [f.name for f in SANDBOX_DIR.iterdir() if f.is_file()]
+    moved = {sub: [f.name for f in (SANDBOX_DIR / sub).iterdir()]
+             for sub in ("图片", "文档", "压缩包")}
+    return not leftovers, f"根目录残留:{leftovers or '无'} 分布:{moved}"
 
 
 def main():
@@ -73,6 +113,8 @@ def main():
     for key in picks:
         name, text, expect_file = TASKS[key]
         print(f"\n===== 任务{key} {name} =====", flush=True)
+        if key == "5":
+            make_sandbox_fixture()
         agent = DesktopAgent(
             llm, auditor=AuditLogger(), history=TaskHistory(),
             plugins=plugins, skills=skills,
@@ -90,10 +132,19 @@ def main():
         rec = agent.history.recent(1)[0]
         status = rec.get("status")
         effect = "无产物要求"
-        if expect_file is not None:
+        ok = status == "success"
+        if key == "5":
+            clean, detail = check_sandbox_5()
+            effect = f"沙箱{'干净' if clean else '未整理'}（{detail}）"
+            ok = ok and clean
+        elif key == "6":
+            hit = "4140" in (result or "")
+            effect = "结果含 4140" if hit else "最终回复未见 4140"
+            ok = ok and hit
+        elif expect_file is not None:
             effect = ("产物已生成" if expect_file.exists()
                       else f"产物缺失：{expect_file}")
-        ok = status == "success" and (expect_file is None or expect_file.exists())
+            ok = ok and expect_file.exists()
         summary.append((key, name, status, ok, elapsed, effect))
         print(f"\n>>> 任务{key} 状态={status} 用时={elapsed:.0f}s {effect}", flush=True)
         print(f">>> 最终回复：{result[:300]}", flush=True)

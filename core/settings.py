@@ -129,13 +129,24 @@ def should_show_onboarding(settings, connected: bool) -> bool:
     return str(settings.get("onboarding_choice", "") or "") in ONBOARDING_AUTO_STATES
 
 
-def validate_public_url(url: str, require_https: bool = True) -> tuple:
-    """外发网址校验：scheme 白名单 + 解析后不得指向内网/环回/保留地址。
+# 明显指向本机/局域网的主机名模式（open_url 的无 DNS 模式用）
+_LOCAL_HOST_SUFFIXES = (".localhost", ".local", ".internal", ".lan",
+                        ".home", ".localdomain")
 
-    require_https=True 用于云端服务地址（api endpoint）；
-    浏览器打开网址（open_url）传 require_https=False，允许 http 但
-    同样拒绝 localhost/内网/链路本地/保留地址——防止被诱导把浏览器
-    指向内网服务或云元数据地址。
+
+def validate_public_url(url: str, require_https: bool = True,
+                        check_dns: bool = True) -> tuple:
+    """外发网址校验：scheme 白名单 + 不得指向本机/内网/保留地址。
+
+    require_https=True 用于云端服务地址（api endpoint），并发起真实请求——
+    本进程就是请求方，DNS 解析结果即真实连接目标，必须严格校验（默认）。
+    check_dns=False 用于浏览器打开网址（open_url）：浏览器有自己的解析路径
+    （DoH/代理/hosts 工具），与本进程的系统解析可能不一致——2026-10-01 实测
+    本机系统 DNS 把 github.com 指向 127.0.0.1（拦截策略）而浏览器可达，DNS
+    预校验会误杀正常网址。故浏览器路径只做：scheme 白名单 + IP 字面量
+    is_global + 本地主机名模式（localhost/*.local 等），域名级防护交给
+    浏览器自身策略。注：run_cmd 的 start 命令可绕过本校验——它拦的是
+    open_url 的误用，不是对抗性绕过（见 docs/issues issue-3 同类边界）。
     """
     try:
         p = urlparse(url)
@@ -145,9 +156,12 @@ def validate_public_url(url: str, require_https: bool = True) -> tuple:
     if p.scheme not in schemes:
         return False, (f"网址必须使用 {'https' if require_https else 'http/https'}"
                        if require_https else "只支持 http/https 网址")
-    host = p.hostname or ""
+    host = (p.hostname or "").lower()
     if not host:
         return False, "缺少主机名"
+    if not check_dns:
+        if host == "localhost" or host.endswith(_LOCAL_HOST_SUFFIXES):
+            return False, "不允许打开本机/局域网主机名"
     try:
         ipaddress.ip_address(host)
     except ValueError:
@@ -156,6 +170,8 @@ def validate_public_url(url: str, require_https: bool = True) -> tuple:
         ip = ipaddress.ip_address(host)
         if not ip.is_global:
             return False, "不允许使用非公网 IP"
+        return True, ""
+    if not check_dns:
         return True, ""
     try:
         infos = socket.getaddrinfo(host, None)

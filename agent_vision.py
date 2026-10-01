@@ -294,6 +294,9 @@ def focus_window(title: str) -> str:
 UIA_TYPES = ("Button", "MenuItem", "Edit", "Document", "CheckBox",
              "RadioButton", "ComboBox", "ListItem", "TabItem", "Hyperlink")
 
+# 浏览器主窗口类名：Chrome 与 Edge 同源（Chromium），Firefox 独立
+BROWSER_WINDOW_CLASSES = {"Chrome_WidgetWin_1", "MozillaWindowClass"}
+
 
 def _pywinauto_desktop():
     """延迟导入 pywinauto（导入较慢，且 exe 环境可能缺失）"""
@@ -313,7 +316,26 @@ def _find_window_wrapper(desktop, title=None):
                 return w, None
         names = "、".join(w.window_text() for w in wins[:6])
         return None, f"错误: 找不到窗口「{title}」。可见窗口有: {names}"
-    # 取前台窗口标题来匹配
+def _browser_uia_block(win) -> str:
+    """浏览器窗口一律拒绝 UIA 控件操作（T11 结构性约束）。
+
+    Chrome/Edge 的控件树单次枚举实测 120~150 秒且页面控件名不稳定，
+    提示词引导对 glm-4-flash 级模型不够（2026-10-01 重放两度实测无视），
+    这里直接硬拦：把 150 秒的浪费变成一条即时错误，引导走视觉路线。
+    返回非空文本 = 拦截理由；空串 = 非浏览器，放行。
+    """
+    try:
+        cls = win.class_name()
+    except Exception:
+        return ""
+    if cls in BROWSER_WINDOW_CLASSES:
+        return ("错误: 不支持对浏览器窗口做控件枚举/命名点击（控件树单次可达"
+                "2 分钟且页面控件名不稳定）。请改用 analyze_screen 看清页面后"
+                "直接 click(x, y) 坐标点击")
+    return ""
+
+
+# 取前台窗口标题来匹配
     fg = _user32.GetForegroundWindow()
     n = _user32.GetWindowTextLengthW(fg)
     buf = ctypes.create_unicode_buffer(n + 1) if n else ctypes.create_unicode_buffer(2)
@@ -390,6 +412,9 @@ def list_ui_elements(window_title: str = "", limit: int = 40) -> str:
     win, err = _find_window_wrapper(desktop, window_title or None)
     if err:
         return err
+    blocked = _browser_uia_block(win)
+    if blocked:
+        return blocked
     pops = _menu_popups()  # 打开中的菜单弹窗（如 记事本 格式→字体）
     try:
         found = []
@@ -463,6 +488,9 @@ def click_ui_element(window_title: str, name: str) -> str:
     win, err = _find_window_wrapper(desktop, window_title or None)
     if err:
         return err
+    blocked = _browser_uia_block(win)
+    if blocked:
+        return blocked
     try:
         candidates = []
         for ctype in UIA_TYPES:
