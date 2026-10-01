@@ -20,6 +20,7 @@ from pathlib import Path
 import pytest
 
 import agent_loop
+import agent_vision
 from agent_loop import DesktopAgent
 from core.audit import AuditLogger
 from core.approval import AutoDenyPolicy
@@ -565,3 +566,174 @@ def test_plain_click_keeps_pixel_verify(tmp_path, monkeypatch):
     ])
     assert result == "任务完成"
     assert calls["old"] == 1 and calls["strong"] == 0            # 走旧路径，未进强校验
+
+
+# ==================== retry 审计带失败原因（T10，2026-10-01） ====================
+
+def test_retry_audit_record_carries_reason(monkeypatch):
+    """T10：retry 审计记录自带当次失败文本（截断 120 字），排障无需再按
+    seq 前后拼接 tool_result 才能还原原因。"""
+    monkeypatch.setattr(core_retry.time, "sleep", lambda s: None)
+    events = []
+
+    class _StubAuditor:
+        def emit(self, type, **kw):
+            events.append((type, kw))
+
+    calls = {"n": 0}
+
+    def flaky():
+        calls["n"] += 1
+        if calls["n"] < 2:
+            return "错误: 窗口还没出现"
+        return "ok"
+
+    result, attempts, ok = core_retry.run_with_retry(
+        flaky, "open_app", True, auditor=_StubAuditor(), on_retry=lambda *a: None)
+    assert ok and attempts == 2 and result == "ok"
+    retries = [kw for t, kw in events if t == "retry"]
+    assert len(retries) == 1 and retries[0]["tool"] == "open_app"
+    assert "窗口还没出现" in retries[0]["reason"]
+
+
+def test_retry_audit_reason_truncated(monkeypatch):
+    """超长失败文本截断到 120 字符，审计行不吞整个 tool_result"""
+    monkeypatch.setattr(core_retry.time, "sleep", lambda s: None)
+    events = []
+
+    class _StubAuditor:
+        def emit(self, type, **kw):
+            events.append((type, kw))
+
+    core_retry.run_with_retry(lambda: "错误: " + "长" * 300, "wait", True,
+                              auditor=_StubAuditor(), on_retry=lambda *a: None,
+                              max_retries=1)
+    reason = next(kw for t, kw in events if t == "retry")["reason"]
+    assert len(reason) == 120 and reason.endswith("长")
+
+
+# ==================== 发现 A：type_text 回显必须无歧义完整（2026-10-01） ====================
+
+def test_type_text_echo_explicit_complete(monkeypatch):
+    """发现 A（重放实录：回显截断 50 字符 → 模型误以为没输完，同一内容
+    重输 6 遍烧 12 轮）：短文本全文回显 + 明确字数；长文本明确字数不回显"""
+    monkeypatch.setattr(agent_loop, "_type_text_with_space",
+                        lambda text, interval: "")
+    short = agent_loop.TOOL_FUNCTIONS["type_text"]({"text": "345"})
+    assert "typed: 345" in short and "已完整输入" in short
+    long_msg = agent_loop.TOOL_FUNCTIONS["type_text"]({"text": "长" * 200})
+    assert "已完整输入 200 字符" in long_msg
+    assert ("长" * 10) not in long_msg      # 长文本不回显，杜绝"看起来被截断"
+
+
+# ==================== 发现 G③：同参同错熔断（2026-10-01 真实用例） ====================
+
+def test_same_args_same_error_breaks_loop(env):
+    """focus_window「匹配到多个」后模型原样重试 20+ 次烧光轮次——
+    同参同错第 3 次必须注入熔断提示，且同一次连击只注入一次"""
+    agent, stub, logs, tmp_path = env
+
+    def always_fail(args):
+        return "错误: 匹配到多个窗口"
+
+    agent_loop.TOOL_FUNCTIONS["press_key"] = always_fail
+    _run(agent, [
+        _tool_call("k1", "press_key", {"key": "enter"}),
+        _tool_call("k2", "press_key", {"key": "enter"}),
+        _tool_call("k3", "press_key", {"key": "enter"}),
+        _tool_call("k4", "press_key", {"key": "enter"}),
+        _final(),
+    ])
+    prompts = [m["content"] for m in agent.messages
+               if m["role"] == "user" and "连续 3 次" in m.get("content", "")]
+    assert len(prompts) == 1, "同一次连击只注入一次熔断提示"
+
+
+# ==================== 发现 G②：open_app 校验轮询 + explorer 标题词 ====================
+
+def test_verify_open_app_polls_until_window(monkeypatch):
+    """应用冷启动慢：校验从"只查一次"改为轮询（最多 4 秒），窗口晚到不假阴性"""
+    seq = [[], [], ["主文件夹 - 文件资源管理器"]]
+    monkeypatch.setattr(agent_loop.core_verify, "_window_titles",
+                        lambda: seq.pop(0) if len(seq) > 1 else seq[0])
+    monkeypatch.setattr(agent_loop.core_verify.time, "sleep", lambda s: None)
+    ok, _ = agent_loop.core_verify.verify_open_app("explorer")
+    assert ok
+
+
+def test_verify_open_app_explorer_hint_matches(monkeypatch):
+    """explorer 的中文窗口标题必须能命中（修复前关键词表为空、exe 名兜底
+    也命不中中文标题——校验对 explorer 永远假阴性）"""
+    monkeypatch.setattr(agent_loop.core_verify, "_window_titles",
+                        lambda: ["主文件夹 - 文件资源管理器"])
+    ok, _ = agent_loop.core_verify.verify_open_app("explorer")
+    assert ok
+
+
+# ==================== 发现 B：analyze_screen 默认限定活动窗口（2026-10-01） ====================
+
+def _vision_with_stub(monkeypatch, captured, fg_rect):
+    """构造云端视觉实例：截屏/前台矩形/云端应答全部打桩"""
+    import agent_vision
+
+    class _Img:
+        def __init__(self, size):
+            self.size = size
+
+        def crop(self, box):
+            return _Img((box[2] - box[0], box[3] - box[1]))
+
+        def convert(self, mode):
+            return self
+
+        def save(self, buf, format=None, **kwargs):
+            # 编码长度随图像尺寸变化：裁剪与否可以从 b64 长度区分
+            buf.write(b"x" * (self.size[0] * self.size[1] // 100))
+
+    monkeypatch.setattr(agent_vision.pyautogui, "screenshot",
+                        lambda: _Img((400, 300)))
+    monkeypatch.setattr(agent_vision, "_foreground_rect", lambda: fg_rect)
+    cfg = {"mode": "cloud", "width": 1600, "timeout": 5,
+           "cloud_base_url": "https://x", "cloud_api_key": "k",
+           "cloud_model": "m"}
+    v = agent_vision.ScreenVision(cfg=cfg)
+    monkeypatch.setattr(v, "_ask_cloud",
+                        lambda q, b64, t: (captured.setdefault("len", len(b64)), None)[::-1])
+    return v
+
+
+def test_analyze_screen_crops_to_foreground(monkeypatch):
+    """发现 B（重放实录：全屏截图把无关窗口文字读进视觉结果，任务 3 编造
+    项目名、任务 4 串扰记事本旧内容）：默认裁到前台窗口，full 才看整屏"""
+    captured = {}
+    v = _vision_with_stub(monkeypatch, captured, (50, 60, 350, 260))
+    v.ask("测试", scope="active")
+    active_len = captured["len"]
+    captured.clear()
+    v.ask("测试", scope="full")
+    full_len = captured["len"]
+    assert active_len < full_len          # 裁剪图更小 → 编码更短
+
+
+def test_crop_fallback_tiny_or_missing_rect(monkeypatch):
+    """前台窗口过小（最小化/异常）或取不到 → 回退整屏，不裁出废图"""
+    captured = {}
+    v = _vision_with_stub(monkeypatch, captured, (10, 10, 30, 20))
+    v.ask("测试", scope="active")
+    tiny_len = captured["len"]
+    captured.clear()
+    monkeypatch.setattr(agent_vision, "_foreground_rect", lambda: None)
+    v.ask("测试", scope="active")
+    none_len = captured["len"]
+    assert tiny_len == none_len           # 两者都回退了整屏
+
+
+# ==================== T16：explorer 工作流提示（2026-10-01） ====================
+
+def test_system_prompt_has_explorer_shortcuts():
+    """T16（第 4 跑实录：模型在控件列表里找不到"文档"类名字，30 轮建不出
+    一个子文件夹）：SYSTEM_PROMPT 必须给出快捷键路线（Ctrl+Shift+N/
+    Ctrl+X/V/F2）与"控件名随视图变化、每步先确认"的告诫"""
+    assert "Ctrl+Shift+N" in agent_loop.SYSTEM_PROMPT
+    assert "Ctrl+V" in agent_loop.SYSTEM_PROMPT
+    assert "文件资源管理器提示" in agent_loop.SYSTEM_PROMPT

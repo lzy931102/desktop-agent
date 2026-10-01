@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 
 import agent_loop
-from agent_loop import DesktopAgent, _open_url
+from agent_loop import DesktopAgent, _create_folder, _open_url
 from core.audit import AuditLogger
 from core.history import TaskHistory
 from core.retry import run_with_retry
@@ -309,3 +309,130 @@ def test_empty_reply_flag_resets_between_tasks(tmp_path, stub_tools):
     agent.llm = _FakeLLM([_final("这次正常完成")])
     agent.run("回归：第二条正常")
     assert agent.history.recent(1)[0]["status"] == "success"
+
+
+# ---- 发现 D：history 落 tool_calls 实数（2026-10-01） ----
+
+def test_history_records_tool_calls_count(tmp_path, stub_tools, monkeypatch):
+    """发现 D（沙箱用例 5 实录：模型纯文本拒做却记 success）：history 落
+    本任务实际工具调用数。0 + success = 对话完成但没动手，GUI 据此打
+    "⚠未调用工具"标注；纯问答任务的 success 语义不变（T8 契约保持）"""
+    monkeypatch.setattr(agent_loop, "TOOL_FUNCTIONS",
+                        {"wait": lambda a: "waited"})
+
+    agent = DesktopAgent(llm=None, history=TaskHistory(tmp_path / "h1.jsonl"))
+    agent.llm = _FakeLLM([_final("我目前没有直接操作文件系统的工具，"
+                                 "建议您手动处理")])
+    agent.run("回归：纯文本答复（零工具）")
+    rec = agent.history.recent(1)[0]
+    assert rec["status"] == "success"          # 答复语义不变
+    assert rec["tool_calls"] == 0              # 但"没动手"可见
+
+    agent2 = DesktopAgent(llm=None, history=TaskHistory(tmp_path / "h2.jsonl"))
+    agent2.llm = _FakeLLM([
+        _tool_call("t1", "wait", {"seconds": 1}),
+        _final("已完成")])
+    agent2.run("回归：有动手")
+    assert agent2.history.recent(1)[0]["tool_calls"] == 1
+
+
+# ---- 发现 G′：open_url 支持本地文件夹（2026-10-01） ----
+
+def test_open_url_local_folder(tmp_path, monkeypatch):
+    """G′（整理下载用例实录：agent 开了资源管理器只会落在主文件夹，没有
+    导航到目标目录的手段）：文件夹路径经 os.startfile 交给资源管理器打开，
+    不走公网网址校验"""
+    opened = []
+    monkeypatch.setattr(agent_loop.os, "startfile", lambda p: opened.append(p))
+    out = _open_url({"url": str(tmp_path)})
+    assert "opened folder" in out
+    assert opened == [str(tmp_path)]
+
+
+def test_open_url_rejects_local_file(tmp_path):
+    """安全红线：os.startfile 对文件会调起关联程序（exe/bat 等会被执行）——
+    文件路径一律拒绝，只放行已存在的目录"""
+    f = tmp_path / "evil.bat"
+    f.write_text("echo hi", encoding="ascii")
+    out = _open_url({"url": str(f)})
+    assert "只接受本地文件夹" in out
+
+
+def test_open_url_nonexistent_path_hint(tmp_path):
+    """不存在的路径：明确报不存在并提示网址需带 https:// 前缀"""
+    out = _open_url({"url": str(tmp_path / "不存在的文件夹")})
+    assert "不存在" in out and "https://" in out
+
+
+# ---- T18：内置 create_folder 工具（2026-10-01，T16 第 5 跑实录催生） ----
+
+@pytest.fixture
+def allow_root(monkeypatch, tmp_path):
+    """把放行根目录收窄到测试沙箱，测试结果与宿主用户目录布局无关"""
+    monkeypatch.setattr(agent_loop, "CREATE_FOLDER_ALLOWED_ROOTS", (tmp_path,))
+    return tmp_path
+
+
+def test_create_folder_creates_nested(allow_root):
+    """根目录内一次建多级：返回 created 且目录真实落盘"""
+    target = allow_root / "整理" / "文档"
+    out = _create_folder({"path": str(target)})
+    assert "created folder" in out
+    assert target.is_dir()
+
+
+def test_create_folder_existing_dir_ok(allow_root):
+    """已存在同名文件夹按成功返回（"确保存在"语义），模型不会当失败重试"""
+    target = allow_root / "已存在"
+    target.mkdir()
+    out = _create_folder({"path": str(target)})
+    assert "already exists" in out
+
+
+def test_create_folder_rejects_outside_roots(allow_root):
+    """放行根目录外一律拒绝（fail-closed），且不落盘"""
+    outside = allow_root.parent / "t18_outside_should_not_exist"
+    out = _create_folder({"path": str(outside)})
+    assert "不支持" in out
+    assert not outside.exists()
+
+
+def test_create_folder_rejects_dotdot_escape(allow_root):
+    """路径经 resolve() 归一后校验，".." 逃逸到根目录外被拒"""
+    tricky = allow_root / "a" / ".." / ".." / "escaped"
+    out = _create_folder({"path": str(tricky)})
+    assert "不支持" in out
+    assert not (allow_root.parent / "escaped").exists()
+
+
+def test_create_folder_rejects_relative_and_unc(allow_root):
+    """相对路径与 UNC 网络路径直接拒绝（不碰网络资源）"""
+    assert "不支持相对路径" in _create_folder({"path": "相对/文件夹"})
+    assert "不支持网络路径" in _create_folder({"path": "\\\\server\\share\\x"})
+
+
+def test_create_folder_rejects_existing_file(allow_root):
+    """同名文件占用 → 明确拒绝并给出可读原因（不静默吞掉 mkdir 失败）"""
+    f = allow_root / "占用名字.txt"
+    f.write_text("x", encoding="ascii")
+    out = _create_folder({"path": str(f)})
+    assert "同名文件" in out
+
+
+def test_create_folder_guard_risk_none():
+    """定级 none（T18 设计决策）：空文件夹创建无破坏性，不进高危/敏感路径，
+    调用与结果照常经 tool_call/tool_result 进审计哈希链"""
+    assert guard_evaluate("create_folder", {"path": "C:/x"}) == ("none", "")
+
+
+def test_create_folder_end_to_end_loop(allow_root):
+    """接线冒烟：FakeLLM 驱动完整 _run_loop，risk=none 免确认直接执行落盘"""
+    target = allow_root / "下载" / "图片"
+    agent = DesktopAgent(llm=None, history=TaskHistory(allow_root / "h.jsonl"))
+    agent.llm = _FakeLLM([
+        _tool_call("t1", "create_folder", {"path": str(target)}),
+        _final("文件夹已建好")])
+    out = agent.run("在下载里建个图片文件夹")
+    assert "文件夹已建好" in out
+    assert target.is_dir()
+    assert agent.history.recent(1)[0]["tool_calls"] == 1

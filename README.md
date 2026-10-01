@@ -6,17 +6,18 @@ AI 看屏幕、动鼠标键盘、验证结果，一步步把事办完。模型�
 
 - 许可证：[MIT](LICENSE)　·　平台：Windows 10/11　·　当前版本：v2.0.15（`gui.py` 的 `APP_VERSION`）
 - 开发实测环境：Python 3.14 / Windows 10（更低版本未实测，依赖均为纯 pip 安装）
-- 测试：核心套件 **243 passed / 7 xfailed**（2026-09-30，命令见下方「测试」节，可在仓库复核）
+- 测试：核心套件 **255 passed / 7 xfailed**（2026-10-01，命令见下方「测试」节，可在仓库复核）
 
 ## 功能特性
 
 - **自然语言任务**：对话式下任务，AI 规划并调用工具执行，每一步在对话流里可见（工具卡片：参数 → 执行中 → 成功/失败/拦截）
 - **多任务并行**：每个任务一个 Tab，同时跑 1-5 个（默认 3），超出自动排队；支持中途停止
 - **看屏幕理解**：截图缩放到 1600 宽送视觉模型——云端 `glm-4v-flash`（免费，实测 1~5 秒一张屏）或本机 Ollama `qwen-vl`；默认「自动」：配了云端 Key 走云端，否则回退本机
-- **21 个内置工具**：鼠标点击/移动/滚轮、键盘输入/组合键、截屏、图像定位、等待、
-  开应用、窗口查找与聚焦、UIA 控件读取与点击、剪贴板读写、发飞书消息、
+- **23 个内置工具**：鼠标点击/移动/滚轮、键盘输入/组合键、截屏、图像定位、等待、
+  开应用、开网址/文件夹（open_url）、新建文件夹（create_folder）、
+  窗口查找与聚焦、UIA 控件读取与点击、剪贴板读写、发飞书消息、
   鼠标位置/屏幕尺寸查询等（清单见 `agent_loop.py` 的 `TOOLS_SCHEMA`）；
-  另有 `install_skill` 供 AI 自装技能包（需用户确认），合计 22 个
+  另有 `install_skill` 供 AI 自装技能包（需用户确认），合计 24 个
 - **模型热切换**：设置页随时切换 本机 / 云端 / 自动；云端预设四家：智谱、DeepSeek、OpenAI、通义
 - **插件系统**：连接器（.py 工具插件）与技能/专家包（SKILL.md），见 [插件开发指南](docs/插件开发指南.md) 和 [技能包指南](docs/技能包指南.md)
 - **定时任务**：每天 / 每周 / 间隔分钟，持久化到磁盘，重启不重复触发；错过的当天任务不补跑、会在会话里提示
@@ -33,7 +34,7 @@ AI 看屏幕、动鼠标键盘、验证结果，一步步把事办完。模型�
 - **网络出口统一策略**：所有 HTTP 出口禁用系统代理（`trust_env=False`），代理软件不再干扰本地/云端请求；云端地址强制 https 公网校验
 - **动作后校验**：打开应用后确认窗口出现、点击后确认界面变化、写剪贴板后验内容
 - **失败重试**：幂等操作失败自动重试（1s/2s/4s 退避，最多 3 次），高危操作不自动重试
-- **防呆**：单任务最多 10 轮（`MAX_TURNS`）；`wait` 单次上限 60 秒且睡眠中可响应停止
+- **防呆**：单任务最多 30 轮（`MAX_TURNS`，设置面板可调 10–50）；`wait` 单次上限 60 秒且睡眠中可响应停止
 
 ## 快速开始
 
@@ -105,12 +106,13 @@ python gui.py --debug-open settings       # 直接打开面板：settings / sche
 python -m pytest test_core_guard.py test_plugin_system.py test_plugin_boundary.py \
        test_skill_system.py test_agent_loop_guard.py test_vision_backend.py \
        test_phone_bridge.py test_mail_remote.py -q
-# 实测：243 passed, 7 xfailed（7 个 xfailed 是 guard 已拍板不修的绕过变体，
-# 用 xfail 固化防回归，理由见 test_core_guard.py 各用例 docstring）
+# 实测：255 passed, 7 xfailed（7 个 xfailed 是 guard 已拍板不修的绕过变体，
+# 用 xfail 固化防回归，理由见 test_core_guard.py 各用例 docstring；
+# mail_remote 首跑校准已原子化，T1 竞态不再抖动）
 
 # 全量逻辑测试（含 test_ollama_stream.py 的假响应流测试，不依赖真实 Ollama、不动鼠标）：
 python -m pytest -q
-# 实测：254 passed, 7 xfailed
+# 实测：295 passed, 7 xfailed（2026-10-01，T18 create_folder 后；客机裸跑口径）
 ```
 
 `e2e/` 下的 21 个脚本是**会真动鼠标、真开应用**的一次性桌面操控/端到端脚本，
@@ -151,7 +153,7 @@ python -m PyInstaller DesktopAgent.spec --noconfirm
 ```
 desktop-agent/
 ├── gui.py                # 图形界面（侧栏 + Tab + 对话流 + 任务表 + 托盘 + 首启引导）
-├── agent_loop.py         # Agent 主干：LLM 循环、21 个内置工具 + install_skill 调度、审计/审批/重试/停止接线
+├── agent_loop.py         # Agent 主干：LLM 循环、23 个内置工具 + install_skill 调度、审计/审批/重试/停止接线
 ├── agent_vision.py       # 工具包：截屏/视觉理解/窗口/UIA/剪贴板（本地 + 云端双路径）
 ├── core/                 # 基础设施：audit(哈希链)/guard/approval/retry/verify/scheduler/history/settings/paths/feishu
 ├── plugin_system/        # 连接器：.py 工具插件（加载、启停、工具合并）

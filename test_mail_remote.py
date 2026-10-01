@@ -266,6 +266,40 @@ def test_seen_store_uidvalidity_reset(tmp_path):
     assert st2.already("V2", b"1") and not st2.already("V1", b"1")
 
 
+def test_seen_store_observe_three_states(tmp_path):
+    """T1 原子判定 observe：calibrate → execute → seen；换命名空间重新校准"""
+    st = _SeenStore(tmp_path / "s.json")
+    assert st.observe("V1", b"1") == "calibrate"   # 首跑：只登记不执行
+    assert st.observe("V1", b"2") == "execute"     # 同命名空间后续信：受理
+    assert st.observe("V1", b"1") == "seen"        # 重复信：跳过
+    # 落盘重载后状态仍在
+    st2 = _SeenStore(tmp_path / "s.json")
+    assert st2.observe("V1", b"2") == "seen"
+    assert st2.observe("V2", b"1") == "calibrate"  # 命名空间换了：重新校准
+
+
+def test_observe_batch_concurrent_calibrates_once(tmp_path):
+    """T1 竞态回归：并发 observe_batch 同一新命名空间，恰好一个批次做校准，
+    历史记过档的信在任何并发交织下都不被判作 execute（防旧邮件重放）"""
+    st = _SeenStore(tmp_path / "s.json")
+    results, barrier = [], threading.Barrier(8)
+
+    def worker():
+        barrier.wait()
+        results.append(st.observe_batch("V9", [b"a", b"b"]))
+
+    threads = [threading.Thread(target=worker) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert sum(1 for batch in results if "calibrate" in batch) == 1
+    flat = [v for batch in results for v in batch]
+    assert flat.count("calibrate") == 2       # 仅首个批次的两封信
+    assert flat.count("execute") == 0
+    assert flat.count("seen") == 14
+
+
 def test_config_validation_errors():
     r = MailRemote(_FakeRunner())
     with pytest.raises(Exception, match="邮箱账号"):

@@ -24,7 +24,10 @@ class TaskHistory:
         return rec["id"]
 
     def end(self, task_id: str, status: str, result: str = "", turns: int = 0,
-            elapsed_s: float = 0.0):
+            elapsed_s: float = 0.0, tool_calls: int = None):
+        """tool_calls（发现 D，2026-10-01）：本任务实际执行的工具调用数。
+        None = 旧调用方不记录；0 且 status=success = 对话完成但没动手
+        （如模型纯文本拒做），GUI 据此打可见标注，避免统计失真。"""
         with self._lock:
             recs = self._read_all()
             for r in reversed(recs):
@@ -33,6 +36,8 @@ class TaskHistory:
                     r["result"] = (result or "")[:200]
                     r["turns"] = turns
                     r["elapsed_s"] = round(elapsed_s, 1)
+                    if tool_calls is not None:
+                        r["tool_calls"] = tool_calls
                     r["finished_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
                     break
             self.path.write_text(

@@ -141,14 +141,19 @@ class ScreenVision:
 
     # ---------------- 主流程 ----------------
 
-    def ask(self, question: str, timeout: int = None) -> str:
-        """截取当前屏幕，让视觉模型回答问题"""
+    def ask(self, question: str, timeout: int = None, scope: str = "active") -> str:
+        """截取屏幕让视觉模型回答问题。
+
+        scope="active"（默认）只看当前活动窗口（发现 B：全屏会把桌面无关
+        窗口文字读进结果造成编造/串扰）；scope="full" 看整个桌面"""
         if pyautogui is None:
             return "错误: pyautogui 不可用，无法截屏"
         try:
             img = pyautogui.screenshot()
         except Exception as e:
             return f"错误: 截屏失败 - {e}"
+        if scope != "full":
+            img = _crop_foreground(img)
         b64 = self._encode(img)
         limit = timeout or int(self.cfg.get("timeout") or 45)
 
@@ -273,16 +278,53 @@ def list_visible_windows() -> str:
     return "当前可见窗口：\n" + "\n".join(lines)
 
 
+def _foreground_rect():
+    """前台窗口矩形 (left, top, right, bottom)；取不到返回 None"""
+    try:
+        fg = _user32.GetForegroundWindow()
+        if not fg:
+            return None
+        r = ctypes.wintypes.RECT()
+        if not _user32.GetWindowRect(fg, ctypes.byref(r)):
+            return None
+        return (r.left, r.top, r.right, r.bottom)
+    except Exception:
+        return None
+
+
+def _crop_foreground(img):
+    """把整屏截图裁到前台窗口范围（发现 B，2026-10-01 重放实录：全屏截图
+    把桌面无关窗口的文字读进视觉结果，两度造成编造/串扰——任务 3 编造
+    GitHub 项目名、任务 4 把记事本旧内容当成搜索结果）。失败或窗口过小
+    （最小化/异常）时回退整屏，不阻塞主流程"""
+    try:
+        rect = _foreground_rect()
+        if not rect:
+            return img
+        l, t, r, b = rect
+        w, h = img.size
+        l, t, r, b = max(0, l), max(0, t), min(w, r), min(h, b)
+        if r - l < 50 or b - t < 50:
+            return img
+        return img.crop((l, t, r, b))
+    except Exception:
+        return img
+
+
 def focus_window(title: str) -> str:
     """按标题模糊匹配并把窗口切到前台"""
-    targets = [(t, h) for t, _r, h in _enum_windows() if title.lower() in t.lower()]
+    targets = [(t, r, h) for t, r, h in _enum_windows()
+               if title.lower() in t.lower()]
     if not targets:
         return (f"错误: 找不到标题包含「{title}」的窗口。"
                 f"可先用 list_windows 查看现有窗口")
     if len(targets) > 1:
-        names = "、".join(t for t, _ in targets[:5])
-        return f"匹配到多个窗口: {names}，请用更完整的标题"
-    title_, hwnd = targets[0]
+        # 发现 G（2026-10-01 真实用例）：只回一句"匹配到多个"时模型会原样
+        # 重试同一调用 20+ 次——必须给出逐窗口候选明细，并明确告知勿重复原调用
+        lines = [f"- 「{t}」位置{r}" for t, r, _h in targets[:6]]
+        return ("错误: 匹配到多个窗口。请改用更完整的标题（只需改一次，"
+                "不要重复同一调用）：\n" + "\n".join(lines))
+    title_, _r, hwnd = targets[0]
     _user32.ShowWindow(hwnd, 9)  # SW_RESTORE
     _user32.SetForegroundWindow(hwnd)
     time.sleep(0.6)
@@ -316,6 +358,17 @@ def _find_window_wrapper(desktop, title=None):
                 return w, None
         names = "、".join(w.window_text() for w in wins[:6])
         return None, f"错误: 找不到窗口「{title}」。可见窗口有: {names}"
+    # 取前台窗口标题来匹配
+    fg = _user32.GetForegroundWindow()
+    n = _user32.GetWindowTextLengthW(fg)
+    buf = ctypes.create_unicode_buffer(n + 1) if n else ctypes.create_unicode_buffer(2)
+    _user32.GetWindowTextW(fg, buf, n + 1) if n else None
+    for w in wins:
+        if w.window_text() == buf.value:
+            return w, None
+    return (wins[0], None) if wins else (None, "错误: 没有可见窗口")
+
+
 def _browser_uia_block(win) -> str:
     """浏览器窗口一律拒绝 UIA 控件操作（T11 结构性约束）。
 
@@ -333,17 +386,6 @@ def _browser_uia_block(win) -> str:
                 "2 分钟且页面控件名不稳定）。请改用 analyze_screen 看清页面后"
                 "直接 click(x, y) 坐标点击")
     return ""
-
-
-# 取前台窗口标题来匹配
-    fg = _user32.GetForegroundWindow()
-    n = _user32.GetWindowTextLengthW(fg)
-    buf = ctypes.create_unicode_buffer(n + 1) if n else ctypes.create_unicode_buffer(2)
-    _user32.GetWindowTextW(fg, buf, n + 1) if n else None
-    for w in wins:
-        if w.window_text() == buf.value:
-            return w, None
-    return (wins[0], None) if wins else (None, "错误: 没有可见窗口")
 
 
 def _menu_popups():
@@ -617,5 +659,6 @@ def vision_status() -> str:
     return f"{v.describe()}（{'就绪' if v.is_available() else '未就绪'}）"
 
 
-def analyze_screen(question: str) -> str:
-    return get_vision().ask(question)
+def analyze_screen(question: str, scope: str = "active") -> str:
+    """scope="active"（默认）只看当前活动窗口；"full" 看整个桌面（发现 B）"""
+    return get_vision().ask(question, scope=scope)

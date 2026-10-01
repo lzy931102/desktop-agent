@@ -151,3 +151,22 @@ if __name__ == "__main__":
     if FAIL:
         print("失败项：" + "、".join(FAIL))
     sys.exit(1 if FAIL else 0)
+
+
+# ---------------- 发现 G①：focus_window 歧义必须给出候选明细（2026-10-01） ----------------
+
+def test_focus_window_ambiguity_lists_candidates(monkeypatch):
+    """发现 G①（真实用例实录：只回一句"匹配到多个"时模型原样重试同一调用
+    20+ 次烧光轮次）：歧义报错必须逐窗口列候选（标题+位置）并明确告知
+    勿重复原调用"""
+    class _R:
+        def __repr__(self):
+            return "(0, 0, 640, 480)"
+
+    titles = [("主文件夹 - 文件资源管理器", _R(), 101),
+              ("主文件夹 - 文件资源管理器", _R(), 202)]
+    monkeypatch.setattr(agent_vision, "_enum_windows", lambda: titles)
+    out = agent_vision.focus_window("主文件夹")
+    assert "匹配到多个窗口" in out
+    assert out.count("主文件夹 - 文件资源管理器") == 2   # 逐窗口候选
+    assert "不要重复" in out

@@ -585,11 +585,11 @@ TOOLS_SCHEMA = [
         "type": "function",
         "function": {
             "name": "open_url",
-            "description": "用系统默认浏览器打开网址（http/https）。访问网页一律先用它，一步到位，比先开浏览器再输网址快",
+            "description": "打开网址或本地文件夹：网址（http/https）用默认浏览器打开；本地文件夹路径用资源管理器直接打开（只接受文件夹，不接受文件）。访问网页、进入某个文件夹整理/查看文件，一律先用它，一步到位",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "url": {"type": "string", "description": "完整网址，如 https://www.baidu.com"}
+                    "url": {"type": "string", "description": "完整网址（https://www.baidu.com）或本地文件夹完整路径（如 C:\\Users\\me\\Downloads）"}
                 },
                 "required": ["url"]
             }
@@ -598,12 +598,27 @@ TOOLS_SCHEMA = [
     {
         "type": "function",
         "function": {
-            "name": "analyze_screen",
-            "description": "看一眼当前屏幕并回答问题（视觉分析，通常 2~6 秒）。适用于：了解屏幕上有什么、某应用是否打开、界面当前处于什么状态、界面上的文字/按钮写的什么。只回答内容，不返回坐标",
+            "name": "create_folder",
+            "description": "在用户目录下新建文件夹（可一次建多级，桌面/下载/文档等均可）。整理文件前先建分类文件夹用它，一步到位；文件夹已存在不算错误",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "question": {"type": "string", "description": "想了解的问题，如：屏幕上有哪些应用窗口？记事本现在是空白还是有文字？"}
+                    "path": {"type": "string", "description": "要新建的文件夹完整路径，如 C:\\Users\\me\\Downloads\\文档"}
+                },
+                "required": ["path"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "analyze_screen",
+            "description": "看一眼当前屏幕并回答问题（视觉分析，通常 2~6 秒）。默认只看当前活动窗口（聚焦、不受桌面其他窗口干扰）；要看整个桌面传 scope=\"full\"。适用于：了解界面当前处于什么状态、界面上的文字/按钮写的什么。只回答内容，不返回坐标",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "question": {"type": "string", "description": "想了解的问题，如：记事本现在是空白还是有文字？搜索框在哪里？"},
+                    "scope": {"type": "string", "enum": ["active", "full"], "description": "active=只看当前活动窗口（默认）；full=看整个桌面"}
                 },
                 "required": ["question"]
             }
@@ -791,7 +806,7 @@ def _open_app(app_name: str):
 
 
 def _open_url(args):
-    """用系统默认浏览器打开 http/https 网址（T6）。
+    """打开网址（默认浏览器）或本地文件夹（资源管理器）（T6 / 发现 G′）。
 
     之前"打开浏览器访问 xx"只能 open_app 绕白名单（浏览器不在清单），
     退回 win 菜单敲字要烧 4~5 轮——2026-09-30 晚 4 个任务全因此顶格失败。
@@ -800,18 +815,95 @@ def _open_url(args):
     DNS 指向 127.0.0.1 而浏览器可达，DNS 预校验会误杀）——详见
     core.settings.validate_public_url 注释。本进程不发起网络请求，
     由 ShellExecute 交给默认浏览器。
+
+    文件夹（G′，2026-10-01 整理下载用例实录）：open_app("explorer") 只落在
+    "主文件夹"，模型没有导航到目标目录的手段，两度重开后放弃——os.startfile
+    对目录即"在资源管理器中打开"。**只放行已存在的目录**：startfile 对文件
+    会调起关联程序（exe/bat 等会被执行），文件与非存在路径一律拒绝。
     """
-    url = str(args.get("url", "") or "").strip()
-    if not url:
-        return "错误: 不支持空网址，请传完整 url（含 https://）"
-    ok, why = validate_public_url(url, require_https=False, check_dns=False)
+    raw = str(args.get("url", "") or "").strip()
+    if not raw:
+        return ("错误: 不支持空参数——网址请传完整 url（含 https://），"
+                "文件夹请传完整路径")
+    looks_like_url = ("://" in raw
+                      or raw.lower().startswith(("http://", "https://", "www.")))
+    if not looks_like_url:
+        folder = Path(raw)
+        if not folder.is_dir():
+            if folder.exists():
+                return ("错误: open_url 只接受本地文件夹，不接受文件——打开"
+                        "文件会调起关联程序（有执行风险）。如确需打开文件，"
+                        "请先在资源管理器中导航到所在文件夹")
+            return (f"错误: 本地路径不存在或不是文件夹：{raw}。"
+                    f"如果是网址，请带上 https:// 前缀")
+        try:
+            os.startfile(str(folder))
+        except OSError as e:
+            return f"错误: 打开文件夹失败 - {e}"
+        return f"opened folder in explorer: {folder}"
+    ok, why = validate_public_url(raw, require_https=False, check_dns=False)
     if not ok:
         return f"错误: 不支持打开该网址（{why}）"
     try:
-        os.startfile(url)
+        os.startfile(raw)
     except OSError as e:
         return f"错误: 浏览器打开失败 - {e}"
-    return f"opened in default browser: {url}"
+    return f"opened in default browser: {raw}"
+
+
+# 新建文件夹放行根目录（T18）：只允许在用户目录下创建。空文件夹本身无破坏性
+# （不覆盖/不删除/不执行任何东西），但全盘放行会留下面向系统目录的污染面；
+# 需要其他位置（如测试沙箱、其他盘）时在此扩表即可。
+CREATE_FOLDER_ALLOWED_ROOTS = (Path.home(),)
+
+
+def _create_folder(args):
+    """在用户目录下新建文件夹（T18，T16 第 5 跑实录催生）。
+
+    背景：T15 打通"导航到目标目录"后，模型在 explorer 里新建子文件夹仍要走
+    右键菜单/Ctrl+Shift+N 的 UIA 操作链，控件名随视图变化多，30 轮建不出一个
+    子文件夹——直接给工具，一步到位。
+
+    安全约束（fail-closed，与 open_app 白名单同风格）：
+    - 只接受绝对路径，相对路径拒绝（模型输出一律要求完整路径）；
+    - UNC 网络路径（\\\\开头）拒绝——不碰网络资源；
+    - resolve() 归一后才校验落点：必须位于放行根目录内，".." 逃逸与符号
+      链接一并被解析消解；
+    - 同名文件已占用 → 拒绝并说明；同名文件夹已存在 → 按"已存在"成功返回
+      （"确保存在"语义已满足，避免模型把已存在当失败重试）；
+    - 拒绝文案带"不支持"，与 core/retry 的确定性失败标记对齐（本工具也不在
+      RETRYABLE_TOOLS 内，双重保证不烧退避）。
+
+    风险定级 none（guard.TOOL_BASE_RISK 不收录即 none）：空文件夹创建无破坏
+    性，调用与结果照常进审计哈希链，不给用户加"敏感操作"提示噪音。
+    """
+    raw = str(args.get("path", "") or "").strip().strip('"').strip()
+    if not raw:
+        return "错误: 不支持空参数——请传要新建的文件夹完整路径"
+    if raw.startswith("\\\\"):
+        return ("错误: 不支持网络路径（\\\\开头）——请在本地用户目录下新建"
+                "文件夹")
+    folder = Path(raw)
+    if not folder.is_absolute():
+        return ("错误: 不支持相对路径——请传完整路径"
+                "（如 C:\\Users\\me\\Downloads\\文档）")
+    resolved = folder.resolve()
+    roots = [Path(r).resolve() for r in CREATE_FOLDER_ALLOWED_ROOTS]
+    if not any(resolved == r or resolved.is_relative_to(r) for r in roots):
+        return ("错误: 不支持在该位置新建文件夹——目前仅允许在用户目录（"
+                f"{Path.home()}）下新建（桌面/下载/文档等）。其他位置请用户"
+                "手动创建，或由用户确认后放行")
+    if resolved.exists() and not resolved.is_dir():
+        return (f"错误: 该路径已被同名文件占用，无法新建文件夹：{resolved}。"
+                "请换一个文件夹名")
+    existed = resolved.is_dir()
+    try:
+        resolved.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        return f"错误: 新建文件夹失败 - {e}"
+    if existed:
+        return f"folder already exists: {resolved}（已存在，无需新建）"
+    return f"created folder: {resolved}"
 
 
 WAIT_MAX_SECONDS = 60  # wait 上限：模型传 seconds=100000 不能真睡 27 小时
@@ -843,7 +935,12 @@ def _wait_tool(args, stop_requested=None):
 
 TOOL_FUNCTIONS = {
     "click": lambda args: pyautogui.click(args["x"], args["y"], button=args.get("button", "left"), clicks=args.get("clicks", 1)) or f"clicked at ({args['x']}, {args['y']})",
-    "type_text": lambda args: (_type_text_with_space(args["text"], args.get("interval", 0.05)) or f"typed: {args['text'][:50]}"),
+    # 回显必须无歧义表达"已完整输入"（发现 A，2026-10-01 重放）：修复前
+    # 截断 50 字符，模型误以为没输完，同一内容重输 6 遍烧 12 轮
+    "type_text": lambda args: (_type_text_with_space(args["text"], args.get("interval", 0.05)) or (
+        f"typed: {args['text']}（共 {len(args['text'])} 字符，已完整输入）"
+        if len(args["text"]) <= 80 else
+        f"已完整输入 {len(args['text'])} 字符（长文本不回显全文）")),
     "press_key": lambda args: pyautogui.press(args["key"], presses=args.get("presses", 1)) or f"pressed {args['key']}",
     "hotkey": lambda args: pyautogui.hotkey(*args["keys"]) or f"hotkey {'+'.join(args['keys'])}",
     "move_to": lambda args: pyautogui.moveTo(args["x"], args["y"], duration=args.get("duration", 0.5)) or f"moved to ({args['x']}, {args['y']})",
@@ -853,9 +950,10 @@ TOOL_FUNCTIONS = {
     "wait": lambda args: _wait_tool(args),
     "open_app": lambda args: _open_app(args["app_name"]),
     "open_url": lambda args: _open_url(args),
+    "create_folder": lambda args: _create_folder(args),
     "get_mouse_position": lambda args: (lambda pos: f"mouse at {pos}")(pyautogui.position()),
     "get_screen_size": lambda args: (lambda sz: f"screen size {sz}")(pyautogui.size()),
-    "analyze_screen": lambda args: analyze_screen(args["question"]),
+    "analyze_screen": lambda args: analyze_screen(args["question"], scope=args.get("scope", "active")),
     "list_windows": lambda args: _list_windows_impl(),
     "focus_window": lambda args: _focus_window_impl(args["title"]),
     "list_ui_elements": lambda args: _list_ui_elements_impl(args.get("window_title", "")),
@@ -907,13 +1005,20 @@ SYSTEM_PROMPT = """你是一个电脑操作助手，通过工具帮用户完成�
 可用工具：
 - list_windows(): 列出所有可见窗口（秒回）——「有哪些窗口/应用」一律用它，不要用 analyze_screen
 - focus_window(title): 把窗口切到前台
-- analyze_screen(question): 看懂屏幕内容并回答问题（通常 2~6 秒）——用于理解屏幕内容、界面上的文字/按钮
+- analyze_screen(question): 看懂屏幕内容并回答问题（通常 2~6 秒）——用于理解界面当前状态、界面上的文字/按钮；
+  默认只看当前活动窗口，要看整个桌面传 scope="full"
 - list_ui_elements(window_title): 列出窗口内的控件（按钮/菜单/输入框）及精确坐标；
   点开菜单后再查一次，能列出菜单弹窗里的项（如 格式→字体）
 - click_ui_element(window_title, name): 按名称点击控件（含打开中的菜单项）——最可靠的点击方式
 - open_app(app_name): 打开应用（notepad/calc/cmd/explorer/paint/记事本/计算器等）
-- open_url(url): 用默认浏览器打开网址（http/https，仅限公网网址）。
-  「打开浏览器/访问某网页」类任务一律先用它，一步到位不用再敲开始菜单
+- open_url(url): 用默认浏览器打开网址（http/https，仅限公网网址）；
+  传本地文件夹完整路径则在资源管理器中直接打开该文件夹（只接受文件夹，
+  不接受文件）。
+  「打开浏览器/访问某网页」「打开/整理某个文件夹」类任务一律先用它，
+  一步到位不用再敲开始菜单或手动导航
+- create_folder(path): 在用户目录下新建文件夹（一次可建多级，已存在不算错误）。
+  「整理文件/建分类文件夹」类任务先用它把要用的目标文件夹建好，
+  不要在资源管理器里手动右键新建
 - click(x, y): 点击屏幕坐标；type_text(text): 在光标处输入文本（支持中文，自动粘贴）
 - press_key(key) / hotkey(keys): 按键与组合键；scroll(clicks): 滚动；move_to(x, y): 移动鼠标
 - clipboard_read() / clipboard_write(text): 读写剪贴板
@@ -925,13 +1030,19 @@ SYSTEM_PROMPT = """你是一个电脑操作助手，通过工具帮用户完成�
 
 标准工作流（重要）：
 1. 了解环境：先 list_windows 看有哪些窗口；需要目标应用时先 open_app 或 focus_window 把它切到前台；
-   要访问网页直接 open_url(url)，不要先开浏览器再输网址
+   要访问网页直接 open_url(url)，要打开某个文件夹直接 open_url(文件夹完整路径)，
+   都不要先开应用再手动导航
 2. 操作控件：list_ui_elements 查看目标窗口的控件名称 → click_ui_element 按名称点击。
    这比猜坐标可靠得多，是首选。
    【浏览器例外（T11 实测）】目标窗口是 Chrome/Edge/Firefox 等浏览器时，禁止用
    list_ui_elements / click_ui_element——浏览器控件树枚举单次可达 2 分钟且页面控件名
    不稳定。改用 analyze_screen 看懂页面后直接 click(x, y) 坐标点击：网页是动态渲染
    界面，视觉识别比 UIA 更快也更可靠
+   【文件资源管理器提示（T16/T18 实测）】新建文件夹直接用 create_folder(path)
+   工具（一步到位；工具不可用时才按 Ctrl+Shift+N 或右键→新建→文件夹）；
+   移动文件：选中后 Ctrl+X
+   剪切，进入目标文件夹（open_url 可直达）再 Ctrl+V 粘贴；F2 重命名。
+   explorer 控件名随视图变化较多，每步操作前先 list_ui_elements 确认当前实际名称
 3. 看懂界面：analyze_screen 通常几秒就回，需要理解屏幕内容时可用；
    「有哪些窗口/应用」用 list_windows，「有哪些控件」用 list_ui_elements（点开菜单后可查菜单项），
    这两个比看屏更精确，能用就优先用
@@ -985,6 +1096,8 @@ class DesktopAgent:
         self._last_locate_failed = False  # 上一次 locate_on_screen 失败 → 拦截下一次盲点击
         self._stop_requested = False  # 用户请求停止
         self._empty_reply = False     # 本任务模型返回过空回复（T8：history 状态机优先读它）
+        self._tool_calls_made = 0     # 本任务实际执行的工具调用数（发现 D：0 = 对话完成但没动手）
+        self._repeat_fail = {"key": None, "n": 0}  # 同参同错连击计数（发现 G 熔断）
         self._medium_notified = set()  # medium 风险已提示过的来源（插件名/工具名），一次会话只提示首次
         self.on_tool_call = None      # 回调：工具调用前
         self.on_tool_result = None    # 回调：工具调用后
@@ -1153,6 +1266,8 @@ class DesktopAgent:
         """任务入口：包装历史记录与审计生命周期，循环体在 _run_loop"""
         self.messages.append({"role": "user", "content": user_input})
         self._empty_reply = False  # 逐任务复位：上一任务的空回复不影响本任务定态
+        self._tool_calls_made = 0  # 逐任务复位（发现 D）
+        self._repeat_fail = {"key": None, "n": 0}  # 逐任务复位（发现 G）
         task_id = self.history.start(user_input) if self.history else None
         start = time.time()
         if self.auditor:
@@ -1176,7 +1291,8 @@ class DesktopAgent:
                           "failed" if final_reply_failed(result) else
                           "success")
                 self.history.end(task_id, status, result or "",
-                                 self.current_turn, time.time() - start)
+                                 self.current_turn, time.time() - start,
+                                 tool_calls=self._tool_calls_made)
             if self.auditor:
                 self.auditor.emit("task_end", task_id=task_id,
                                   status="error" if error else "finished",
@@ -1260,6 +1376,7 @@ class DesktopAgent:
                         args = {}
                 else:
                     args = raw_args or {}
+                self._tool_calls_made += 1  # 发现 D：history 记录实际动手次数
 
                 # 审计 + 风险评估 + 高危操作确认（core 基础设施）
                 if self.auditor:
@@ -1318,6 +1435,24 @@ class DesktopAgent:
                         self._last_locate_failed = not self._image_located
                     if str(result).startswith("错误"):
                         self._log(f"[错误] {result}")
+                        # 同参同错熔断（发现 G，2026-10-01 真实用例实录）：
+                        # focus_window「匹配到多个窗口」后模型原样重试 20+ 次
+                        # 烧光轮次——第 3 次连击时注入收束指令打断循环
+                        key = (name, json.dumps(args, sort_keys=True,
+                                                ensure_ascii=False, default=str))
+                        rf = self._repeat_fail
+                        rf["n"] = rf["n"] + 1 if rf["key"] == key else 1
+                        rf["key"] = key
+                        if rf["n"] == 3:
+                            warn = (f"【系统提示】工具 {name} 用相同参数已连续 "
+                                    "3 次返回同样错误。不要再重复该调用：请换"
+                                    "一种方法达成目标，或如实汇总当前进度并"
+                                    "结束任务。")
+                            self.messages.append({"role": "user",
+                                                  "content": warn})
+                            self._log(f"⛔ {warn}")
+                    else:
+                        self._repeat_fail = {"key": None, "n": 0}
 
                 if self.on_tool_result:
                     self.on_tool_result(name, args, result)

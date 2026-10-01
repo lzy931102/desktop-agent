@@ -46,7 +46,10 @@ _APP_TITLE_HINTS = {
     "notepad.exe": ["记事本", "notepad"],
     "calc.exe": ["计算器", "calculator"],
     "cmd.exe": ["cmd", "命令提示符"],
-    "explorer.exe": [],  # 文件管理器标题随目录变化，靠 exe 名兜底
+    # explorer 窗口标题以"文件资源管理器"结尾（发现 G②：修复前此列表为空、
+    # 回退的 exe 名匹配也命不中中文标题，open_app("explorer") 的校验
+    # 永远假阴性，诱导模型重开出双窗口歧义）
+    "explorer.exe": ["文件资源管理器", "资源管理器", "explorer"],
     "mspaint.exe": ["画图", "paint"],
     "control.exe": ["控制面板", "control"],
     "taskmgr.exe": ["任务管理器"],
@@ -54,20 +57,30 @@ _APP_TITLE_HINTS = {
 }
 
 
-def verify_open_app(app_name: str) -> tuple:
-    """确认打开应用后窗口已出现"""
-    titles = " ".join(_window_titles()).lower()
-    hints = None
+def verify_open_app(app_name: str, attempts: int = 4,
+                    interval: float = 1.0) -> tuple:
+    """确认打开应用后窗口已出现。
+
+    轮询等待（发现 G②）：应用冷启动要数秒才出窗口，修复前只查一次，
+    explorer 实测每次误报"未检测到应用窗口"。最多等 attempts×interval 秒，
+    任一轮命中即通过；仍然未命中才判失败。"""
     key = app_name.strip().lower()
+    hints = None
     for exe, words in _APP_TITLE_HINTS.items():
         if key == exe[:-4] or key == exe:
             hints = words
             break
     if hints is None:
         hints = [app_name]
-    hit = any(h.lower() in titles for h in hints if h) or \
-          any(key in t.lower() for t in _window_titles())
-    return (True, "窗口已出现") if hit else (False, "未检测到应用窗口")
+    for i in range(attempts):
+        titles = _window_titles()
+        joined = " ".join(titles).lower()
+        if any(h.lower() in joined for h in hints if h) or \
+                any(key in t.lower() for t in titles):
+            return True, "窗口已出现"
+        if i < attempts - 1:
+            time.sleep(interval)
+    return False, "未检测到应用窗口"
 
 
 def _small_gray(img):

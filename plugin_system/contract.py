@@ -34,6 +34,7 @@ DEFAULT_RISK = "medium"
 RESERVED_TOOL_NAMES = frozenset({
     "click", "type_text", "press_key", "hotkey", "move_to", "scroll",
     "screenshot", "locate_on_screen", "wait", "open_app", "open_url",
+    "create_folder",
     "get_mouse_position", "get_screen_size", "analyze_screen",
     "list_windows", "focus_window", "list_ui_elements", "click_ui_element",
     "clipboard_read", "clipboard_write", "verify_message_sent",

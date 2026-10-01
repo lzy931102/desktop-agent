@@ -138,7 +138,11 @@ def main():
             effect = f"沙箱{'干净' if clean else '未整理'}（{detail}）"
             ok = ok and clean
         elif key == "6":
-            hit = "4140" in (result or "")
+            # 千分位写法（4,140 / 4，140）与纯数字（4140）都算命中：
+            # 2026-10-01 客户机重放实录——模型记事本输入与最终回复均为"4,140"，
+            # 纯子串比对把功能成功的用例误判为 FAIL
+            normalized = (result or "").replace(",", "").replace("，", "")
+            hit = "4140" in normalized
             effect = "结果含 4140" if hit else "最终回复未见 4140"
             ok = ok and hit
         elif expect_file is not None:

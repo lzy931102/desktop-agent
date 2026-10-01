@@ -2076,10 +2076,15 @@ class AgentGUI:
                 if status_key == "running":
                     continue  # 本会话区已展示活任务，历史里残留的 running 是上次异常退出
                 elapsed = f"{r['elapsed_s']:.0f}秒" if r.get("elapsed_s") else "-"
+                result_txt = r.get("result", "")
+                # 发现 D（2026-10-01）：status=success 但 tool_calls=0 = 对话
+                # 完成却没动手（如模型纯文本拒做），标注出来避免统计失真
+                if status_key == "done" and r.get("tool_calls") == 0:
+                    result_txt = "⚠未调用工具　" + result_txt
                 add_row(status_key, r.get("task", "")[:32],
                         str(r.get("turns", "-")) if r.get("turns") else "-",
                         elapsed, rel_time(r.get("ts", "")),
-                        r.get("result", ""))
+                        result_txt)
 
         render(dlg, table)
 

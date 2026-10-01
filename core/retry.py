@@ -59,8 +59,11 @@ def run_with_retry(exec_fn, tool_name: str, retryable: bool,
 
         wait = BACKOFF_SECONDS[min(attempts - 1, len(BACKOFF_SECONDS) - 1)]
         if auditor:
+            # reason=（T10，2026-10-01）：记录当次失败文本，排障无需再按
+            # seq 前后拼接 tool_result 才能还原原因
             auditor.emit("retry", tool=tool_name, attempt=attempts,
-                         max_retries=max_retries, wait_s=wait)
+                         max_retries=max_retries, wait_s=wait,
+                         reason=str(result)[:120])
         if on_retry:
             try:
                 on_retry(attempts, max_retries, wait)

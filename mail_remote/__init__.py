@@ -101,14 +101,37 @@ class _SeenStore:
                 return False               # uid 命名空间换了：历史记录作废
             return uid.decode() in self._seen
 
-    def ensure_validity(self, validity: str):
-        """显式落 uid 命名空间（首跑校准必须调用——即使本轮一封信都没有，
-        否则空收件箱会让"首跑"永远成立，任务永远不执行）"""
+    def observe_batch(self, validity: str, uids: List[bytes]) -> List[str]:
+        """原子地完成「首跑判定 + 落 uid 命名空间 + 去重登记」（T1，2026-10-01）。
+
+        返回与 uids 等长的判定列表："calibrate"（本轮属首跑校准：命名空间
+        首次出现，信只登记不执行）、"execute"（正常新信）、"seen"（已登记，
+        跳过）。判定与落盘在同一把锁内——并发轮询（后台线程 + 直接调用）
+        不再可能出现「A 线程已落命名空间、B 线程仍判作新命名空间执行历史
+        信」的重放窗口（2026-09-30 复评 2.1 立案，2026-10-01 客户机复现后
+        修复）。空列表也要调用：首跑空收件箱同样要落命名空间，否则"首跑"
+        永远成立、任务永远不执行（原 ensure_validity 的职责并入于此）。
+        """
         with self._lock:
-            if self._validity != validity:
+            first_run = validity != self._validity
+            if first_run:
                 self._validity = validity
                 self._seen = []
-                self._save()
+            verdicts = []
+            for uid in uids:
+                u = uid.decode()
+                if u in self._seen:
+                    verdicts.append("seen")
+                    continue
+                self._seen.append(u)
+                verdicts.append("calibrate" if first_run else "execute")
+            self._seen = self._seen[-STATE_UID_CAP:]
+            self._save()
+            return verdicts
+
+    def observe(self, validity: str, uid: bytes) -> str:
+        """单信版 observe_batch（三种返回态语义见其 docstring）"""
+        return self.observe_batch(validity, [uid])[0]
 
     def mark(self, validity: str, uid: bytes):
         with self._lock:
@@ -240,6 +263,10 @@ class MailRemote:
 
         首次运行（状态文件没有当前邮箱的 uidvalidity 记录）只做校准：
         把现有未读信的 uid 记为已见但不执行——防止重启后旧任务邮件重放。
+        判定/登记全部走 _SeenStore.observe_batch 单锁原子完成（T1）；
+        拉取放在判定之前——校准只在真正取到信时提交。修复前
+        ensure_validity 先于 fetch，若校准后取信失败，下一轮 first_run
+        恒为 False，历史旧信会被当新信执行（正是本机制要防的重放场景）。
         """
         cfg = self._config
         senders = set(cfg["allowed_senders"])
@@ -249,19 +276,17 @@ class MailRemote:
             return from_addr in senders and subject.strip().startswith(prefix)
 
         validity = self._fetch_uidvalidity() or f"@{cfg['username']}"
-        first_run = self._store._validity != validity
-        self._store.ensure_validity(validity)
-
         items = fetch_new(self._imap_factory,
                           cfg["username"], cfg["auth_code"],
                           cfg["imap_host"], target_pred)
 
+        verdicts = self._store.observe_batch(
+            validity, [item.uid for item in items])
         handled = 0
-        for item in items:
-            if self._store.already(validity, item.uid):
+        for item, verdict in zip(items, verdicts):
+            if verdict == "seen":
                 continue
-            self._store.mark(validity, item.uid)
-            if first_run:
+            if verdict == "calibrate":
                 self._log("✉️ 首次校准：历史来信只登记不执行")
                 continue
             cmd = parse_command(item.subject, item.body, prefix)
