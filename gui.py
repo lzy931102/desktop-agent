@@ -98,7 +98,7 @@ except ImportError:
     Image = None
 
 
-class AgentGUI((DialogsMixin), SettingsMixin, SchedulerPanelMixin, TasksMixin, PluginsMixin, MailSectionMixin, PhoneSectionMixin):
+class AgentGUI(DialogsMixin, SettingsMixin, SchedulerPanelMixin, TasksMixin, PluginsMixin, MailSectionMixin, PhoneSectionMixin):
     def __init__(self):
         # 按系统 DPI 缩放控件（必须在创建窗口前设置）：高分屏不缩放会字太小
         try:
