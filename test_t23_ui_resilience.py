@@ -17,6 +17,7 @@ import pytest
 import gui
 import ui.sessions as sessions_mod
 from core import blackbox
+from ui.formatters import _effective_max_turns
 from ui.sessions import TaskSession
 
 
@@ -257,3 +258,54 @@ def test_no_undefined_names_in_ui_modules():
     bad = [line for line in out.getvalue().splitlines()
            if "undefined name" in line]
     assert bad == [], "存在未定义名引用（拆分漏导入）:\n" + "\n".join(bad)
+
+
+# ==================== 5. _apply_log 轮次渲染（T4 拆分残留回归） ====================
+
+class _FakeLogbox:
+    """记录 _log_line 写入的行，模拟滚动日志区"""
+
+    def __init__(self):
+        self.lines = []
+
+    def configure(self, **kw):
+        pass
+
+    def insert(self, pos, text):
+        self.lines.append(text)
+
+    def see(self, pos):
+        pass
+
+
+class _FakeChat:
+    def append(self, ev):
+        pass
+
+    def refresh(self, ev):
+        pass
+
+    def render_all(self, s):
+        pass
+
+
+def test_t23_apply_log_no_app_attribute():
+    """T4 拆分残留回归：_apply_log 的 turn 分支曾引用不存在的 self.app
+    （gui.py:610 写成 self.app.settings），每条"第 N 轮"日志事件必抛
+    AttributeError；被事件泵兜住不崩，但日志区画不出"—— 第 N 轮 ——"、
+    状态条/侧栏轮次停更（黑匣子 gui-20261004.log 2026-10-04 06:09 捕获）。
+    修复为 self.settings 后，本用例锁定三处可见状态：
+    不再抛异常、轮次计数/状态条文案更新、日志行真实写入。"""
+    s = make_session([], status="running")
+    app = make_agent_shell({s.id: s}, active=s)
+    app.logbox = _FakeLogbox()
+    app.chat = _FakeChat()
+
+    # 原始格式与 agent_loop.py:1631 上报一致（parse_log strip 后命中 "── 第"）
+    app._apply_log(s, "\n── 第 3/30 轮 ──")   # 旧代码在此抛 AttributeError
+
+    assert s.turn == 3
+    assert s.current_action == \
+        f"🧠 第 3/{_effective_max_turns(app.settings)} 轮思考中…"
+    assert "—— 第 3 轮 ——" in "".join(app.logbox.lines)   # 日志区画出来了
+    assert s.log_lines and "—— 第 3 轮 ——" in s.log_lines[-1]

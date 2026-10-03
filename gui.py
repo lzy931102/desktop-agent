@@ -607,7 +607,7 @@ class AgentGUI(DialogsMixin, SettingsMixin, SchedulerPanelMixin, TasksMixin, Plu
             m = re.search(r"第 (\d+)/", text)
             n = int(m.group(1)) if m else 0
             s.turn = n
-            s.current_action = f"🧠 第 {n}/{_effective_max_turns(self.app.settings)} 轮思考中…"
+            s.current_action = f"🧠 第 {n}/{_effective_max_turns(self.settings)} 轮思考中…"
             self._log_line(s, f"—— 第 {n} 轮 ——")
             ev = s.add("turn", n=n)
         elif kind == "assistant":
