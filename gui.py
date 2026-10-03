@@ -15,6 +15,7 @@ import re
 import sys
 import threading
 import time
+import traceback
 import webbrowser
 import customtkinter as ctk
 import agent_vision
@@ -22,6 +23,7 @@ import tkinter as tk
 from tkinter import messagebox
 from agent_loop import (DesktopAgent, LLMClient, LLMConfig, LLMProvider,
                         build_llm_client, final_reply_failed)
+from core import blackbox
 from core.approval import GuiApprovalBridge
 from core.audit import AuditLogger
 from core.history import TaskHistory
@@ -669,6 +671,8 @@ class AgentGUI(DialogsMixin, SettingsMixin, SchedulerPanelMixin, TasksMixin, Plu
         return path if os.path.exists(path) else None
 
     def _apply_done(self, s, ok, result, stopped):
+        if s.status != "running":
+            return  # T23 终态幂等：僵尸复位与真实收尾撞车时，以先到者为准
         s.elapsed = (time.time() - s.start_time) if s.start_time else None
         if stopped:
             s.status = "stopped"
@@ -836,55 +840,70 @@ class AgentGUI(DialogsMixin, SettingsMixin, SchedulerPanelMixin, TasksMixin, Plu
 
     # ================= 主泵 =================
     def _pump(self):
-        for s in list(self.sessions.values()):
-            try:
-                while True:
-                    kind, payload = s.ui_queue.get_nowait()
-                    self._apply(s, kind, payload)
-            except queue.Empty:
-                pass
+        try:
+            for s in list(self.sessions.values()):
+                try:
+                    while True:
+                        try:
+                            kind, payload = s.ui_queue.get_nowait()
+                        except queue.Empty:
+                            break
+                        try:
+                            self._apply(s, kind, payload)
+                        except Exception:
+                            # T23：单条事件渲染失败只丢这一条，泵必须活着
+                            blackbox.write("pump._apply",
+                                           traceback.format_exc())
+                            self._log_line(s, "⚠ 界面更新一条事件失败"
+                                              "（已记入黑匣子，任务不受影响）")
+                except queue.Empty:
+                    pass
 
-        # 审批请求 → 确认卡（一次处理一条，弹到对应任务）
-        for s in list(self.sessions.values()):
-            if s.status != "running":
-                continue
-            req = s.approval.pending()
-            if req:
-                ev = s.add("confirm", req=req, state="pending")
-                s.current_action = "⏸ 停下来了，等你确认后才继续"
-                self._log_line(s, "⏸ 有风险操作，等你确认："
-                               + str(req)[:120])
-                if s.phone_task_id:
-                    # 手机端看不到确认卡：在任务流里明说卡在哪，免得干等
-                    self._phone_publish_info(
-                        s, "电脑上弹出了确认卡（有风险的操作），"
-                           "需要人在电脑前点「允许」才继续")
-                if self.active is not s:
-                    self._select(s)      # 切到该任务，render_all 已包含确认卡
-                else:
-                    self.chat.append(ev)
-                if self.root.state() == "withdrawn":
-                    self.root.deiconify()
-                self.root.lift()
-                self._sidebar_dirty = self._tabs_dirty = True
+            # 审批请求 → 确认卡（一次处理一条，弹到对应任务）
+            for s in list(self.sessions.values()):
+                if s.status != "running":
+                    continue
+                req = s.approval.pending()
+                if req:
+                    ev = s.add("confirm", req=req, state="pending")
+                    s.current_action = "⏸ 停下来了，等你确认后才继续"
+                    self._log_line(s, "⏸ 有风险操作，等你确认："
+                                   + str(req)[:120])
+                    if s.phone_task_id:
+                        # 手机端看不到确认卡：在任务流里明说卡在哪，免得干等
+                        self._phone_publish_info(
+                            s, "电脑上弹出了确认卡（有风险的操作），"
+                               "需要人在电脑前点「允许」才继续")
+                    if self.active is not s:
+                        self._select(s)      # 切到该任务，render_all 已包含确认卡
+                    else:
+                        self.chat.append(ev)
+                    if self.root.state() == "withdrawn":
+                        self.root.deiconify()
+                    self.root.lift()
+                    self._sidebar_dirty = self._tabs_dirty = True
 
-        # 已确认关闭的会话：等 done 事件落地（线程真正收尾）再从列表摘除，
-        # 避免"列表里没了、线程还在跑"的假象
-        for s in [x for x in self.sessions.values()
-                  if x.closing and x.status != "running"]:
-            self._remove_session(s)
+            # 已确认关闭的会话：等 done 事件落地（线程真正收尾）再从列表摘除，
+            # 避免"列表里没了、线程还在跑"的假象
+            for s in [x for x in self.sessions.values()
+                      if x.closing and x.status != "running"]:
+                self._remove_session(s)
 
-        self._launch_next_queued()
+            self._launch_next_queued()
 
-        if self._tabs_dirty:
-            self._rebuild_tabs()
-            self._tabs_dirty = False
-        if self._sidebar_dirty:
-            self._rebuild_sidebar()
-            self._sidebar_dirty = False
+            if self._tabs_dirty:
+                self._rebuild_tabs()
+                self._tabs_dirty = False
+            if self._sidebar_dirty:
+                self._rebuild_sidebar()
+                self._sidebar_dirty = False
 
-        self._update_progress()
-        self.root.after(120, self._pump)
+            self._update_progress()
+        except Exception:
+            # T23：泵体内任何一段炸掉都记入黑匣子，续链在 finally 里照常执行
+            blackbox.write("pump.body", traceback.format_exc())
+        finally:
+            self.root.after(120, self._pump)
 
     def _update_progress(self):
         s = self.active
@@ -1198,7 +1217,23 @@ if __name__ == "__main__":
     import sys
     if not ensure_single_instance():
         sys.exit(0)  # 已有实例在跑：函数内已尽力把旧窗口带到前台，本进程退出
+    # T23 黑匣子：窗口版 exe 的 stderr 无人接收，界面/线程崩溃堆栈全部丢失——
+    # 重定向到本地日志，配合 Tk 回调钩子与 threading.excepthook 全部留痕
+    try:
+        _gui_log = open(blackbox.path(), "a", encoding="utf-8", buffering=1)
+        sys.stdout = _gui_log
+        sys.stderr = _gui_log
+    except Exception:
+        pass  # 黑匣子不可用不影响启动
+    sys.excepthook = lambda t, v, tb: blackbox.write(
+        "sys.excepthook", "".join(traceback.format_exception(t, v, tb)))
+    threading.excepthook = lambda a: blackbox.write(
+        f"thread<{a.thread.name}> died",
+        "".join(traceback.format_exception(a.exc_type, a.exc_value,
+                                           a.exc_traceback)))
     app = AgentGUI()
+    app.root.report_callback_exception = lambda e, v, tb: blackbox.write(
+        "tkCallback", "".join(traceback.format_exception(e, v, tb)))
     if len(sys.argv) >= 3 and sys.argv[1] == "--debug-open":
         panel = sys.argv[2]  # settings / scheduler / history / tasks_table
         app.root.after(1500, getattr(app, f"_show_{panel}"))
