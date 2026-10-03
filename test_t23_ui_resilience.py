@@ -10,6 +10,7 @@
 import queue
 import threading
 import time
+from pathlib import Path
 
 import pytest
 
@@ -232,3 +233,27 @@ def test_task_stage_logged_to_blackbox(tmp_path, monkeypatch):
     time.sleep(0.05)
     log = (tmp_path / "logs" / blackbox.path().name).read_text(encoding="utf-8")
     assert "run-enter" in log and "run-exit" in log
+
+
+# ==================== 4. 拆分包名称完整性 ====================
+
+def test_no_undefined_names_in_ui_modules():
+    """T4 拆分包漏导入回归：ERR 缺失让每条系统气泡渲染必崩（T23 黑匣子
+    2026-10-03 捕获）。pyflakes 的 undefined name（F821）在 ui/ 与 gui.py
+    必须为零——pyflakes 能正确处理函数内局部导入，不误报。"""
+    import io
+
+    from pyflakes.api import check
+    from pyflakes.reporter import Reporter
+
+    root = Path(sessions_mod.__file__).parent.parent
+    files = sorted(p for p in (root / "ui").rglob("*.py")
+                   if "__init__" not in p.name) + [root / "gui.py"]
+    out = io.StringIO()
+    for p in files:
+        # 自己按 utf-8 读源码再喂给 pyflakes：api.check 的第一参数是源码
+        # 字符串（不是文件列表），且显式读入可绕开它的编码探测歧义
+        check(p.read_text(encoding="utf-8"), str(p), Reporter(out, out))
+    bad = [line for line in out.getvalue().splitlines()
+           if "undefined name" in line]
+    assert bad == [], "存在未定义名引用（拆分漏导入）:\n" + "\n".join(bad)

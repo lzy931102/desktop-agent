@@ -13,7 +13,7 @@ except ImportError:
 
 from ui.formatters import tool_display
 from ui.theme import (ACCENT, ACCENT_HOVER, BG, BORDER, BUBBLE_USER, CARD,
-                      CARD_2, DEFAULT_MAX_CONCURRENT, EXAMPLES, FAINT,
+                      CARD_2, DEFAULT_MAX_CONCURRENT, ERR, EXAMPLES, FAINT,
                       MSG_BLOCKED_SUB, MUTED, OK, TEXT, TOOL_CHIP, TOOLC,
                       WARN, WELCOME_HEAD)
 
