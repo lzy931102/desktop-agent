@@ -1157,8 +1157,47 @@ class AgentGUI(DialogsMixin, SettingsMixin, SchedulerPanelMixin, TasksMixin, Plu
         self._real_exit()
 
 
+def ensure_single_instance(app_name="DesktopAgent", window_title=None):
+    """单实例锁（T21）：已有实例在跑时返回 False，并尽量把已有主窗口带到前台。
+
+    - Windows 用命名 Mutex 判活；句柄故意保持打开直到进程退出，锁随进程自动释放
+    - Global 命名空间创建失败（如非管理员无 SeCreateGlobalPrivilege）降级
+      Local（同会话内仍互斥）；再失败则放行启动——锁绝不阻塞正常启动
+    - 非 Windows 平台直接放行
+    - 找得到已有窗口就带到前台；找不到（如已在别的会话）只退出，不切焦点
+    """
+    if os.name != "nt":
+        return True
+    try:
+        kernel32 = _ctypes.WinDLL("kernel32", use_last_error=True)
+        user32 = _ctypes.WinDLL("user32", use_last_error=True)
+        kernel32.CreateMutexW.restype = _ctypes.c_void_p
+        kernel32.CreateMutexW.argtypes = [_ctypes.c_void_p, _ctypes.c_int,
+                                          _ctypes.c_wchar_p]
+        user32.FindWindowW.restype = _ctypes.c_void_p
+        user32.FindWindowW.argtypes = [_ctypes.c_wchar_p, _ctypes.c_wchar_p]
+    except Exception:
+        return True  # ctypes 不可用：降级为直接启动
+    for prefix in ("Global\\", "Local\\"):
+        mutex = kernel32.CreateMutexW(None, False,
+                                      f"{prefix}{app_name}_SingleInstance")
+        if _ctypes.get_last_error() == 183:  # ERROR_ALREADY_EXISTS
+            # 标题须与 AgentGUI.__init__ 的 root.title 保持一致
+            title = window_title or f"Desktop Agent v{APP_VERSION} - 智能桌面助手"
+            hwnd = user32.FindWindowW(None, title)
+            if hwnd:
+                user32.ShowWindow(hwnd, 9)          # SW_RESTORE
+                user32.SetForegroundWindow(hwnd)
+            return False
+        if mutex:
+            break  # 锁到手，允许启动
+    return True
+
+
 if __name__ == "__main__":
     import sys
+    if not ensure_single_instance():
+        sys.exit(0)  # 已有实例在跑：函数内已尽力把旧窗口带到前台，本进程退出
     app = AgentGUI()
     if len(sys.argv) >= 3 and sys.argv[1] == "--debug-open":
         panel = sys.argv[2]  # settings / scheduler / history / tasks_table
