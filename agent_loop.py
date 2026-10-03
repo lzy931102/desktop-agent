@@ -571,11 +571,14 @@ TOOLS_SCHEMA = [
         "type": "function",
         "function": {
             "name": "open_app",
-            "description": "通过Win+R打开应用",
+            "description": "通过Win+R打开应用。必须带 reason（临时工具/结果载体/unknown）和 purpose（一句话用途），供任务收尾时判断该窗口关还是留",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "app_name": {"type": "string", "description": "应用名称，如 notepad, calc, cmd, explorer"}
+                    "app_name": {"type": "string", "description": "应用名称，如 notepad, calc, cmd, explorer"},
+                    "reason": {"type": "string", "enum": ["临时工具", "结果载体", "unknown"],
+                               "description": "临时工具=用完就没用（计算器/临时记事本/截图工具）；结果载体=用户要看的；拿不准传 unknown"},
+                    "purpose": {"type": "string", "description": "一句话用途，如：计算 345×12"}
                 },
                 "required": ["app_name"]
             }
@@ -585,13 +588,30 @@ TOOLS_SCHEMA = [
         "type": "function",
         "function": {
             "name": "open_url",
-            "description": "打开网址或本地文件夹：网址（http/https）用默认浏览器打开；本地文件夹路径用资源管理器直接打开（只接受文件夹，不接受文件）。访问网页、进入某个文件夹整理/查看文件，一律先用它，一步到位",
+            "description": "打开网址或本地文件夹：网址（http/https）用默认浏览器打开；本地文件夹路径用资源管理器直接打开（只接受文件夹，不接受文件）。访问网页、进入某个文件夹整理/查看文件，一律先用它，一步到位。必须带 reason 和 purpose（同 open_app 的记录规则）",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "url": {"type": "string", "description": "完整网址（https://www.baidu.com）或本地文件夹完整路径（如 C:\\Users\\me\\Downloads）"}
+                    "url": {"type": "string", "description": "完整网址（https://www.baidu.com）或本地文件夹完整路径（如 C:\\Users\\me\\Downloads）"},
+                    "reason": {"type": "string", "enum": ["临时工具", "结果载体", "unknown"],
+                               "description": "给用户看的网页=结果载体；查资料用的中间网页=临时工具；拿不准传 unknown"},
+                    "purpose": {"type": "string", "description": "一句话用途，如：给用户看天气"}
                 },
                 "required": ["url"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "close_app",
+            "description": "关闭本任务此前用 open_app 打开的应用窗口（仅限 记事本/计算器/画图/截图工具）。任务收尾时把「临时工具」类窗口关掉；用户自己开的窗口关不了也不该关；浏览器等结果载体不适用",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "app_name": {"type": "string", "description": "应用名，如 calc（优先用这个）"},
+                    "hwnd": {"type": "integer", "description": "窗口句柄，比 app_name 更精确（open_app 打开时已自动记录）"}
+                }
             }
         }
     },
@@ -783,7 +803,9 @@ def _type_text_with_space(text: str, interval: float = 0.05):
                 time.sleep(interval)
 
 
-def _open_app(app_name: str):
+def _open_app(args, record=None):
+    """打开应用（白名单查表）。record 传入时（T22）打开成功后把窗口记进
+    本任务开窗记录，供收尾 close_app 按记录精确关闭。"""
     # 纯白名单启动：可执行名全部硬编码，模型输出只用于查表，杜绝命令注入
     app_map = {
         "notepad": "notepad.exe", "记事本": "notepad.exe", "文本编辑器": "notepad.exe",
@@ -793,6 +815,7 @@ def _open_app(app_name: str):
         "paint": "mspaint.exe", "画图": "mspaint.exe", "画板": "mspaint.exe",
         "控制面板": "control.exe", "任务管理器": "taskmgr.exe", "截图工具": "snippingtool.exe",
     }
+    app_name = str(args.get("app_name", "") or "")
     exe = app_map.get(app_name.strip()) or app_map.get(app_name.strip().lower())
     if not exe:
         return ("错误: 仅支持直接打开: 记事本(notepad)、计算器(calc)、命令行(cmd)、"
@@ -800,12 +823,21 @@ def _open_app(app_name: str):
                 "清单外的应用可以从开始菜单找：press_key(key=\"win\") 打开开始菜单，"
                 "type_text 输入应用名，press_key(key=\"enter\") 确认；"
                 "并告诉用户：清单外的应用说\"帮我打开 xxx\"，我会从开始菜单找")
+    # 打开前先快照现有候选窗口，之后差集出"本次新开的"（T22 捕获）
+    pre = _candidate_windows(exe) if record is not None else None
     os.startfile(exe)  # ShellExecute 启动，exe 只能是上面白名单中的常量
     time.sleep(2)
+    if record is not None:
+        record.append({
+            "type": "app", "name": app_name.strip(), "exe": exe,
+            "reason": _norm_reason(args.get("reason")),
+            "purpose": str(args.get("purpose", "") or ""),
+            "hwnd": _capture_app_window(exe, pre), "opened_at": time.time(),
+        })
     return f"opened {app_name}"
 
 
-def _open_url(args):
+def _open_url(args, record=None):
     """打开网址（默认浏览器）或本地文件夹（资源管理器）（T6 / 发现 G′）。
 
     之前"打开浏览器访问 xx"只能 open_app 绕白名单（浏览器不在清单），
@@ -820,6 +852,9 @@ def _open_url(args):
     "主文件夹"，模型没有导航到目标目录的手段，两度重开后放弃——os.startfile
     对目录即"在资源管理器中打开"。**只放行已存在的目录**：startfile 对文件
     会调起关联程序（exe/bat 等会被执行），文件与非存在路径一律拒绝。
+
+    T22：record 传入时把打开意图记进本任务开窗记录（收尾提示用；
+    网页/文件夹不在 close_app 白名单，只记不关）。
     """
     raw = str(args.get("url", "") or "").strip()
     if not raw:
@@ -840,6 +875,11 @@ def _open_url(args):
             os.startfile(str(folder))
         except OSError as e:
             return f"错误: 打开文件夹失败 - {e}"
+        if record is not None:
+            record.append({"type": "url", "name": raw,
+                           "reason": _norm_reason(args.get("reason")),
+                           "purpose": str(args.get("purpose", "") or ""),
+                           "hwnd": 0, "exe": "", "opened_at": time.time()})
         return f"opened folder in explorer: {folder}"
     ok, why = validate_public_url(raw, require_https=False, check_dns=False)
     if not ok:
@@ -848,7 +888,256 @@ def _open_url(args):
         os.startfile(raw)
     except OSError as e:
         return f"错误: 浏览器打开失败 - {e}"
+    if record is not None:
+        record.append({"type": "url", "name": raw,
+                       "reason": _norm_reason(args.get("reason")),
+                       "purpose": str(args.get("purpose", "") or ""),
+                       # 网页在既有浏览器窗口开新 tab，无法归属到 hwnd
+                       "hwnd": 0, "exe": "", "opened_at": time.time()})
     return f"opened in default browser: {raw}"
+
+
+# ==================== T22 任务收尾：打开记录与智能关闭 ====================
+# 方案（用户提出，2026-10-03）：打开时就知道"为什么打开"，比任务结束时猜可靠。
+# open_app/open_url 打开成功时顺手把 (type, name, reason, purpose, hwnd) 记进
+# 本任务记录；任务收尾时临时工具用 close_app 关、结果载体保留、unknown 保留
+# 并提示。用户自己开的窗口不在记录里，天然不会被关。
+
+# close_app 只放行这些（浏览器等结果载体不在清单，关闭即拒绝）。
+# Win11 上 UWP 应用（如计算器）窗口挂在 applicationframehost.exe 宿主名下，
+# 校验靠"进程 exe 或标题词"双因子，不依赖宿主进程名。
+CLOSE_APP_WHITELIST = {"notepad.exe", "calc.exe", "mspaint.exe",
+                       "snippingtool.exe"}
+_CLOSE_NAME_TO_EXE = {
+    "notepad": "notepad.exe", "记事本": "notepad.exe",
+    "calc": "calc.exe", "计算器": "calc.exe",
+    "mspaint": "mspaint.exe", "paint": "mspaint.exe", "画图": "mspaint.exe",
+    "snippingtool": "snippingtool.exe", "截图工具": "snippingtool.exe",
+}
+_CAPTURE_TITLE_HINTS = {
+    "notepad.exe": ("notepad", "记事本"),
+    "calc.exe": ("calc", "计算器", "calculator"),
+    "mspaint.exe": ("paint", "画图"),
+    "snippingtool.exe": ("snip", "截图"),
+}
+# 进程 exe 别名组（Win11：计算器真正跑在 calculatorapp.exe，calc.exe 只是跳板；
+# applicationframehost.exe 托管所有 UWP 应用，不能进别名组——那些窗口靠标题词认领）
+_CAPTURE_EXE_ALIASES = {
+    "notepad.exe": ("notepad.exe",),
+    "calc.exe": ("calc.exe", "calculatorapp.exe"),
+    "mspaint.exe": ("mspaint.exe",),
+    "snippingtool.exe": ("snippingtool.exe",),
+}
+
+
+def _norm_reason(value) -> str:
+    """模型给的 reason 归一到三值；拿不准一律 unknown（收尾保守保留）"""
+    v = str(value or "")
+    if "临时" in v:
+        return "临时工具"
+    if "结果" in v:
+        return "结果载体"
+    return "unknown"
+
+
+def _window_process_exe(hwnd) -> str:
+    """窗口所属进程的 exe 文件名（小写）；取不到（权限/已退出）返回空串"""
+    if os.name != "nt" or not hwnd:
+        return ""
+    try:
+        import ctypes
+        from ctypes import wintypes
+        user32 = ctypes.windll.user32
+        kernel32 = ctypes.windll.kernel32
+        pid = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        if not pid.value:
+            return ""
+        handle = kernel32.OpenProcess(0x1000, False, pid.value)  # QUERY_LIMITED_INFORMATION
+        if not handle:
+            return ""
+        try:
+            buf = ctypes.create_unicode_buffer(512)
+            size = wintypes.DWORD(512)
+            ok = kernel32.QueryFullProcessImageNameW(handle, 0, buf,
+                                                     ctypes.byref(size))
+            return (buf.value.rsplit("\\", 1)[-1].lower() if ok else "")
+        finally:
+            kernel32.CloseHandle(handle)
+    except Exception:
+        return ""
+
+
+def _window_title(hwnd) -> str:
+    if os.name != "nt" or not hwnd:
+        return ""
+    try:
+        import ctypes
+        user32 = ctypes.windll.user32
+        n = user32.GetWindowTextLengthW(hwnd)
+        if n <= 0:
+            return ""
+        buf = ctypes.create_unicode_buffer(n + 1)
+        user32.GetWindowTextW(hwnd, buf, n + 1)
+        return buf.value
+    except Exception:
+        return ""
+
+
+def _window_alive(hwnd) -> bool:
+    if os.name != "nt" or not hwnd:
+        return False
+    try:
+        import ctypes
+        return bool(ctypes.windll.user32.IsWindow(hwnd))
+    except Exception:
+        return False
+
+
+def _window_class(hwnd) -> str:
+    if os.name != "nt" or not hwnd:
+        return ""
+    try:
+        import ctypes
+        buf = ctypes.create_unicode_buffer(256)
+        ctypes.windll.user32.GetClassNameW(hwnd, buf, 256)
+        return buf.value
+    except Exception:
+        return ""
+
+
+def _candidate_windows(exe) -> list:
+    """当前可见的"该应用候选窗口"：进程 exe 属别名组，或标题命中关键词"""
+    if os.name != "nt":
+        return []
+    try:
+        import ctypes
+        from ctypes import wintypes
+        user32 = ctypes.windll.user32
+    except Exception:
+        return []
+    aliases = _CAPTURE_EXE_ALIASES.get(exe, (exe,))
+    hints = _CAPTURE_TITLE_HINTS.get(exe, ())
+    out = []
+
+    @ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)
+    def cb(hwnd, _l):
+        if user32.IsWindowVisible(hwnd):
+            title = _window_title(hwnd)
+            if (_window_process_exe(hwnd) in aliases
+                    or any(w.lower() in title.lower() for w in hints)):
+                out.append(hwnd)
+        return True
+
+    user32.EnumWindows(cb, 0)
+    return out
+
+
+def _capture_app_window(exe, before=None, poll_seconds: float = 3.0) -> int:
+    """open_app 后抓"新出现的"窗口 hwnd（best-effort，抓不到返回 0）。
+
+    前台不可靠（2026-10-03 实测：后台进程 startfile 拉起的 UWP 应用不抢
+    前台），用差集法：调用方在 os.startfile 之前先取 before 快照，这里
+    轮询当前候选窗口，减去 before 后第一个出现的即新窗口。候选里优先认领
+    ApplicationFrameWindow——UWP 应用（如 Win11 计算器）一次启动会出
+    框架窗口 + CoreWindow 两个顶层窗口，框架窗口才是关一个=关整个应用的
+    那个（关 CoreWindow 应用不退）。进程名匹配不到的靠标题词认领。
+    找不到返回 0（收尾时该窗口关不了，但也绝不会误关别人的窗口——
+    包括用户自己开的同名窗口）。
+    """
+    known = set(before or ())
+    deadline = time.time() + poll_seconds
+    while True:
+        fallback = None
+        for hwnd in _candidate_windows(exe):
+            if hwnd in known:
+                continue
+            if _window_class(hwnd) == "ApplicationFrameWindow":
+                return hwnd
+            if fallback is None:
+                fallback = hwnd
+        if fallback is not None:
+            return fallback
+        if time.time() >= deadline:
+            return 0
+        time.sleep(0.5)
+
+
+def _close_window(hwnd) -> None:
+    """礼貌关窗：发 WM_CLOSE（应用自己走正常关闭/保存确认流程）；
+    SendMessageTimeout 保证目标窗口挂起时不把本进程拖死"""
+    import ctypes
+    user32 = ctypes.windll.user32
+    # WM_CLOSE=0x0010；SMTO_ABORTIFHUNG=0x0002，3 秒无响应就放弃
+    user32.SendMessageTimeoutW(hwnd, 0x0010, 0, 0, 0x0002, 3000, None)
+
+
+def _close_app(args, record=None):
+    """关闭本任务此前用 open_app 打开的应用窗口（T22 任务收尾用）。
+
+    安全模型（不误关用户窗口）：
+    - 只认"本任务打开记录"里的窗口：记录为空或目标不在记录 → 拒绝；
+      绝不按进程名全局扫窗——用户自己开的同名窗口不在记录，天然保留
+    - 白名单只放 notepad/calc/mspaint/snippingtool；浏览器等结果载体拒绝；
+      close_app 不在 RETRYABLE_TOOLS，拒绝文案带"不支持/找不到窗口"
+      确定性失败标记（core/retry.NON_RETRYABLE_MARKERS），不烧退避
+    - hwnd 优先（精确），hwnd 不在记录同样拒绝；关前复核窗口身份
+      （进程 exe 或标题词），hwnd 被系统复用给别的窗口时拒绝关闭
+    """
+    hwnd_arg = args.get("hwnd")
+    name = str(args.get("app_name", "") or "").strip()
+    if not hwnd_arg and not name:
+        return "错误: 不支持空参数——请传 app_name（如 calc）或 hwnd"
+    if not record:
+        return (f"错误: 找不到窗口——本任务没有用 open_app 打开过 {name or hwnd_arg}，"
+                "你自己（用户）开的窗口不会关闭，无需处理")
+    if hwnd_arg:
+        try:
+            hwnd_arg = int(hwnd_arg)
+        except (TypeError, ValueError):
+            return f"错误: 不支持该 hwnd 参数：{args.get('hwnd')}"
+        entry = next((e for e in record
+                      if e.get("type") == "app" and e.get("hwnd") == hwnd_arg),
+                     None)
+        if entry is None:
+            return ("错误: 不支持关闭该窗口——只能关闭本任务自己用 open_app 打开的"
+                    "应用窗口，用户自己开的窗口不会关闭")
+    else:
+        exe = _CLOSE_NAME_TO_EXE.get(name) or _CLOSE_NAME_TO_EXE.get(name.lower())
+        if exe is None:
+            return ("错误: 不支持关闭 " + (name or "空名称")
+                    + "——只允许关闭 notepad(记事本)/calc(计算器)/mspaint(画图)/"
+                      "snippingtool(截图工具)；浏览器等结果载体请保留并如实告知用户")
+        entry = next((e for e in record
+                      if e.get("type") == "app" and e.get("exe") == exe
+                      and _window_alive(e.get("hwnd"))), None)
+        if entry is None:
+            if any(e.get("type") == "app" and e.get("exe") == exe for e in record):
+                return f"{exe} 窗口已不在（可能已被关闭），无需处理"
+            return (f"错误: 找不到窗口——本任务没有用 open_app 打开过 {name}，"
+                    "你自己（用户）开的窗口不会关闭，无需处理")
+    hwnd = int(entry.get("hwnd") or 0)
+    if not _window_alive(hwnd):
+        return f"{entry.get('name')} 窗口已不在（可能已被关闭），无需处理"
+    # 关前身份复核：hwnd 可能已被系统复用给别的窗口；进程 exe 对不上时
+    # 靠标题词兜底（UWP 宿主进程名不是应用本身）
+    exe = entry.get("exe", "")
+    hints = _CAPTURE_TITLE_HINTS.get(exe, ())
+    title = _window_title(hwnd)
+    if _window_process_exe(hwnd) != exe and not any(
+            w.lower() in title.lower() for w in hints):
+        return ("错误: 找不到窗口——记录的 " + str(entry.get("name"))
+                + " 窗口已被其他窗口取代，为避免误关不执行，请如实告知用户")
+    _close_window(hwnd)
+    # UWP 应用收到 WM_CLOSE 后退场要一两秒，轮询确认而不是只等固定一拍
+    deadline = time.time() + 3.0
+    while _window_alive(hwnd) and time.time() < deadline:
+        time.sleep(0.5)
+    if _window_alive(hwnd):
+        return (f"已向 {entry.get('name')} 发送关闭请求，但窗口仍在"
+                "（可能在等保存确认），请在汇报里提醒用户手动确认")
+    mark = entry.get("purpose") or "临时工具"
+    return f"已关闭 {entry.get('name')}（{mark}）"
 
 
 # 新建文件夹放行根目录（T18）：只允许在用户目录下创建。空文件夹本身无破坏性
@@ -948,8 +1237,9 @@ TOOL_FUNCTIONS = {
     "screenshot": lambda args: (lambda _p: (Path("screenshots").mkdir(exist_ok=True), pyautogui.screenshot().save(Path("screenshots") / _p)) and f"screenshot saved: screenshots/{_p}")(args.get("path", f"screenshot_{int(time.time())}.png")),
     "locate_on_screen": _locate_on_screen,
     "wait": lambda args: _wait_tool(args),
-    "open_app": lambda args: _open_app(args["app_name"]),
-    "open_url": lambda args: _open_url(args),
+    "open_app": lambda args: _open_app(args, args.pop("_agent_opened", None)),
+    "open_url": lambda args: _open_url(args, args.pop("_agent_opened", None)),
+    "close_app": lambda args: _close_app(args, args.pop("_agent_opened", None)),
     "create_folder": lambda args: _create_folder(args),
     "get_mouse_position": lambda args: (lambda pos: f"mouse at {pos}")(pyautogui.position()),
     "get_screen_size": lambda args: (lambda sz: f"screen size {sz}")(pyautogui.size()),
@@ -1010,12 +1300,15 @@ SYSTEM_PROMPT = """你是一个电脑操作助手，通过工具帮用户完成�
 - list_ui_elements(window_title): 列出窗口内的控件（按钮/菜单/输入框）及精确坐标；
   点开菜单后再查一次，能列出菜单弹窗里的项（如 格式→字体）
 - click_ui_element(window_title, name): 按名称点击控件（含打开中的菜单项）——最可靠的点击方式
-- open_app(app_name): 打开应用（notepad/calc/cmd/explorer/paint/记事本/计算器等）
-- open_url(url): 用默认浏览器打开网址（http/https，仅限公网网址）；
+- open_app(app_name, reason, purpose): 打开应用（notepad/calc/cmd/explorer/paint/记事本/计算器等）。
+  reason/purpose 每次都必须带（规则见下方「打开软件时的记录规则」）
+- open_url(url, reason, purpose): 用默认浏览器打开网址（http/https，仅限公网网址）；
   传本地文件夹完整路径则在资源管理器中直接打开该文件夹（只接受文件夹，
-  不接受文件）。
+  不接受文件）。reason/purpose 同 open_app，每次必须带。
   「打开浏览器/访问某网页」「打开/整理某个文件夹」类任务一律先用它，
   一步到位不用再敲开始菜单或手动导航
+- close_app(app_name): 关闭本任务自己用 open_app 打开的窗口（仅限记事本/计算器/画图/截图工具）。
+  任务收尾时关「临时工具」用它；用户自己开的窗口关不了也不该关
 - create_folder(path): 在用户目录下新建文件夹（一次可建多级，已存在不算错误）。
   「整理文件/建分类文件夹」类任务先用它把要用的目标文件夹建好，
   不要在资源管理器里手动右键新建
@@ -1048,6 +1341,29 @@ SYSTEM_PROMPT = """你是一个电脑操作助手，通过工具帮用户完成�
    这两个比看屏更精确，能用就优先用
 4. 兜底手段：控件方式行不通时，用 analyze_screen 了解大致位置，再 click(x, y) 坐标点击
 5. 输入文本：先点击输入框获得焦点，再 type_text
+
+【打开软件时的记录规则（重要）】
+每次 open_app / open_url 时，必须判断它是「临时工具」还是「结果载体」，
+并传 reason 和 purpose 参数：
+- reason="临时工具"：为了完成某个中间步骤打开，用完就没用了
+  （计算器、临时记录的记事本、截图工具、画图）
+- reason="结果载体"：用户会想看的东西，任务结束后还有用
+  （给用户看的网页、给用户看的文档、给用户看的结果）
+- purpose：一句话用途，如"计算 345×12"
+举例：
+- "算 345×12" → open_app(app_name="calc", reason="临时工具", purpose="计算 345×12")
+- "查百度天气给我看" → open_url(url="https://www.baidu.com/…", reason="结果载体", purpose="给用户看天气")
+- "把结果写到记事本" → open_app(app_name="notepad", reason="结果载体", purpose="给用户看结果")
+拿不准就 reason="unknown"（收尾时保守保留，不会误关）
+
+【任务收尾规则（重要）】
+任务完成、向用户汇报之前，按下面的规则处理你打开过的窗口：
+1. 用户自己开的窗口（不是你用 open_app/open_url 打开的）一律保留，不要管
+2. 你自己打开的窗口，按打开时记的 reason 处理：
+   - reason="临时工具" → 用 close_app(app_name=…) 关闭
+   - reason="结果载体" → 保留
+   - reason="unknown" → 保留，并在最终回复里提示"我打开了 XX，你可以手动关闭"
+3. 关闭软件只能用 close_app 工具，禁止用 alt+F4 等快捷键去关
 
 安全规则：
 1. 不要执行任何危险或破坏性操作（删除文件、关闭系统、修改系统设置等）
@@ -1098,6 +1414,7 @@ class DesktopAgent:
         self._empty_reply = False     # 本任务模型返回过空回复（T8：history 状态机优先读它）
         self._tool_calls_made = 0     # 本任务实际执行的工具调用数（发现 D：0 = 对话完成但没动手）
         self._repeat_fail = {"key": None, "n": 0}  # 同参同错连击计数（发现 G 熔断）
+        self._agent_opened = []       # 本任务 Agent 打开的窗口/网页记录（T22 收尾关闭）
         self._medium_notified = set()  # medium 风险已提示过的来源（插件名/工具名），一次会话只提示首次
         self.on_tool_call = None      # 回调：工具调用前
         self.on_tool_result = None    # 回调：工具调用后
@@ -1166,6 +1483,11 @@ class DesktopAgent:
         # 的函数表），分段睡眠让停止请求秒级生效，而不是等下一个工具边界
         if name == "wait":
             return _wait_tool(args, lambda: self._stop_requested)
+        # T22：打开/关闭类工具需要本任务的开窗记录。记录表经 args 搭载、
+        # 在 TOOL_FUNCTIONS 入口 lambda 里 pop 取走——审计与结果回调看到的
+        # 参数保持干净（同 wait 特判：函数表无 self，上下文从这里带进去）
+        if name in ("open_app", "open_url", "close_app"):
+            args["_agent_opened"] = self._agent_opened
         retryable = risk != "high" and guard.is_retryable(name)
 
         # click 前截图供"动作后校验"做界面变化对比；同时采集 UIA 点击目标：
@@ -1268,6 +1590,7 @@ class DesktopAgent:
         self._empty_reply = False  # 逐任务复位：上一任务的空回复不影响本任务定态
         self._tool_calls_made = 0  # 逐任务复位（发现 D）
         self._repeat_fail = {"key": None, "n": 0}  # 逐任务复位（发现 G）
+        self._agent_opened = []  # 逐任务复位：上一任务的开窗记录不影响本任务收尾（T22）
         task_id = self.history.start(user_input) if self.history else None
         start = time.time()
         if self.auditor:

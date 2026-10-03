@@ -200,7 +200,7 @@ def test_permanent_failure_skips_backoff(no_sleep):
 
     def always_whitelist_miss():
         attempts["n"] += 1
-        return agent_loop._open_app("chrome")
+        return agent_loop._open_app({"app_name": "chrome"})  # T22 起签名是 args 字典
 
     result, used, ok = run_with_retry(always_whitelist_miss, "open_app",
                                       retryable=True, max_retries=3)
