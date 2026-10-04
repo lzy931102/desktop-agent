@@ -17,6 +17,29 @@ def path() -> Path:
     return data_dir() / "logs" / f"gui-{time.strftime('%Y%m%d')}.log"
 
 
+def heartbeat_path() -> Path:
+    return data_dir() / "logs" / f"heartbeat-{time.strftime('%Y%m%d')}.log"
+
+
+def heartbeat(note: str = "") -> None:
+    """UI 心跳（卡死取证）：主线程定期一拍，独立日志一行一条。
+
+    2026-10-04 一次无痕冻结（任务全部正常收尾后 UI 卡死，黑匣子/审计/
+    Windows 事件三处零记录）立项：主线程冻结时 after 调度即停，心跳断档，
+    起点可精确到 30 秒内。与 write() 分文件——心跳高频（30 秒一拍），
+    不灌进异常黑匣子。写失败必须静默，绝不能反噬主循环。
+    """
+    try:
+        with _lock:
+            p = heartbeat_path()
+            p.parent.mkdir(parents=True, exist_ok=True)
+            stamp = time.strftime('%Y-%m-%d %H:%M:%S')
+            with open(p, "a", encoding="utf-8") as f:
+                f.write(f"{stamp} {note}\n" if note else f"{stamp}\n")
+    except Exception:
+        pass
+
+
 def write(title: str, body: str = "") -> None:
     """追加一节诊断记录。写失败必须静默——黑匣子绝不能反过来弄崩应用。"""
     try:

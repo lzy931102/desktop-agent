@@ -99,22 +99,13 @@ def test_tokenize_plain_text_roundtrip():
 # ==================== 3. 渲染层（真 Tk，withdraw 不弹窗） ====================
 
 @pytest.fixture(scope="module")
-def tk_env():
-    """模块内所有渲染测试共享一个 CTk 实例。
+def tk_env(ctk_root):
+    """会话级共享 CTk 实例（conftest.ctk_root）。
 
-    逐条建/销毁 CTk 时（全量里 7 个 Tk 测试），teardown 偶发 Tcl
-    "invalid command name" 残留 after 回调（2026-10-04 全量两连 ERROR、
-    单跑又过）——共享实例把创建/销毁降到一次，销毁异常吞掉（纯 teardown
-    噪音，不影响任何断言）。
-    """
-    ctk = pytest.importorskip("customtkinter")
-    root = ctk.CTk()
-    root.withdraw()
-    yield ctk, root
-    try:
-        root.destroy()
-    except Exception:
-        pass
+    同进程反复创建/销毁 Tk 解释器不稳定（init.tcl source 偶发失败），
+    全测试会话只建一次；逐条建/销毁另有 teardown 偶发 Tcl
+    "invalid command name" 残留——两个问题一个解法。"""
+    return ctk_root
 
 
 def test_user_bubble_color_and_radius(tk_env):
@@ -172,26 +163,43 @@ def test_assistant_rich_tags_configured_and_height_fits(tk_env):
 
 # ==================== 4. 点击动作 ====================
 
-def test_open_target_rejects_non_public_url(monkeypatch):
+def test_open_target_work_rejects_non_public_url(monkeypatch):
     """内网/非法网址不允许点击打开（scheme 白名单 + 非内网校验）"""
     opened = []
     monkeypatch.setattr(chat_stream.webbrowser, "open",
                         lambda u: opened.append(u))
-    chat_stream._open_target("url", "http://127.0.0.1:8080/x")
-    chat_stream._open_target("url", "javascript:alert(1)")
-    chat_stream._open_target("url", "file:///C:/Windows/System32")
+    chat_stream._open_target_work("url", "http://127.0.0.1:8080/x")
+    chat_stream._open_target_work("url", "javascript:alert(1)")
+    chat_stream._open_target_work("url", "file:///C:/Windows/System32")
     assert opened == []
-    chat_stream._open_target("url", "https://example.com/ok")
+    chat_stream._open_target_work("url", "https://example.com/ok")
     assert opened == ["https://example.com/ok"]
 
 
-def test_open_target_path_must_exist(monkeypatch):
+def test_open_target_work_path_must_exist(monkeypatch):
     """不存在的路径（可能被分词截断）不动作；存在的目录 explorer 定位"""
     calls = []
     monkeypatch.setattr(chat_stream.subprocess, "Popen",
                         lambda cmd: calls.append(cmd))
-    chat_stream._open_target("path", "F:\\不存在的路径_xyz\\a.txt")
+    chat_stream._open_target_work("path", "F:\\不存在的路径_xyz\\a.txt")
     assert calls == []
     tmp = __import__("pathlib").Path(__import__("tempfile").mkdtemp())
-    chat_stream._open_target("path", str(tmp))
+    chat_stream._open_target_work("path", str(tmp))
     assert len(calls) == 1 and "/select," in calls[0]
+
+
+def test_open_target_runs_in_background_thread(monkeypatch):
+    """点击回调绝不在主线程做同步 IO（失效盘符/浏览器 shell 可阻塞数十秒，
+    2026-10-04 无痕冻结后立规）——_open_target 只负责起 daemon 线程"""
+    import threading as th
+    done = th.Event()
+    seen_threads = []
+
+    def fake_work(kind, value):
+        seen_threads.append(th.current_thread())
+        done.set()
+
+    monkeypatch.setattr(chat_stream, "_open_target_work", fake_work)
+    chat_stream._open_target("url", "https://example.com/x")
+    assert done.wait(2.0)
+    assert seen_threads and seen_threads[0] is not th.main_thread()

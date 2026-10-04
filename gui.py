@@ -157,7 +157,28 @@ class AgentGUI(DialogsMixin, SettingsMixin, SchedulerPanelMixin, TasksMixin, Plu
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self.root.after(120, self._pump)
         self.root.after(600, self._maybe_show_welcome)  # T24：首启「怎么用」卡
+        self._hb_seq = 0
+        self.root.after(0, self._ui_heartbeat)  # T30：UI 心跳取证，30 秒一拍
         threading.Thread(target=self._check_connection, daemon=True).start()
+
+    def _ui_heartbeat(self):
+        """UI 心跳（卡死取证，T30）：主线程 30 秒往独立日志写一拍。
+
+        2026-10-04 一次无痕冻结（任务全部正常收尾后界面卡死，黑匣子/审计/
+        Windows 事件三处零记录）立项：主线程冻结时 after 即不再执行，
+        心跳断档、起点可精确到 30 秒内。取证功能绝不能反噬主循环：
+        写失败静默，续链在 finally 无条件执行。
+        """
+        try:
+            if self._hb_seq == 0:
+                blackbox.heartbeat(f"start pid={os.getpid()} seq=0")
+            else:
+                blackbox.heartbeat(f"seq={self._hb_seq}")
+            self._hb_seq += 1
+        except Exception:
+            pass
+        finally:
+            self.root.after(30_000, self._ui_heartbeat)
 
     # ================= 布局 =================
     def _build_header(self):

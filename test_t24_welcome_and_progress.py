@@ -306,13 +306,11 @@ def test_placeholder_and_hint_copy_in_place():
 
 # ==================== 6. 渲染层（真 Tk，withdraw 不弹窗） ====================
 
-@pytest.fixture
-def tk_env():
-    ctk = pytest.importorskip("customtkinter")
-    root = ctk.CTk()
-    root.withdraw()
-    yield ctk, root
-    root.destroy()
+@pytest.fixture(scope="module")
+def tk_env(ctk_root):
+    """会话级共享 CTk 实例（conftest.ctk_root）：同进程反复建/销毁 Tk
+    解释器不稳定（init.tcl source 偶发失败），全测试会话只建一次。"""
+    return ctk_root
 
 
 def _all_text(container):

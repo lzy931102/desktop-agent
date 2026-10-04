@@ -3,6 +3,7 @@
 import os
 import subprocess
 import sys
+import threading
 import tkinter as tk
 import webbrowser
 
@@ -45,12 +46,18 @@ def _auto_lines(text_widget):
         return max(1, lines)
 
 def _open_target(kind, value):
-    """高亮段点击动作：网址→系统浏览器；路径→资源管理器定位。
+    """高亮段点击动作（后台线程执行，T30）：网址→系统浏览器；路径→定位。
 
-    只在目标真实存在/合法时动作，失败静默（不弹窗打扰）：
-    网址过 scheme 白名单 + 非内网校验（用户主动点击，浏览器自身解析为准，
-    同 open_url 的无 DNS 模式）；路径不存在时不动（可能被截断）。
+    必须异步：os.path.exists 对失效盘符/网络路径可能阻塞数十秒、
+    webbrowser.open 走系统 shell——2026-10-04 一次无痕冻结后立规，
+    点击回调里绝不放同步 IO。目标不合法/不存在时静默不动作：
+    网址过 scheme 白名单 + 非内网校验（用户主动点击，浏览器自身解析
+    为准，同 open_url 的无 DNS 模式）；路径不存在可能是被分词截断。
     """
+    threading.Thread(target=_open_target_work, args=(kind, value),
+                     daemon=True, name="open-target").start()
+
+def _open_target_work(kind, value):
     if kind == "url":
         ok, _err = validate_public_url(value, require_https=False,
                                        check_dns=False)
