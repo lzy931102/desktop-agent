@@ -11,25 +11,46 @@ DEFAULT_MAX_CONCURRENT = 3
 OLLAMA_DOWNLOAD_URL = "https://ollama.com/download"
 CLOUD_TUTORIAL_URL = "https://github.com/lzy931102/desktop-agent#readme"
 
-# ---------------- 配色（gray-900 体系 · 对话流补充色 · WCAG AA） ----------------
-BG = "#111827"            # 主背景（gray-900）
-SIDEBAR = "#0D1526"       # 侧边栏（比主背景更深一档，形成分区）
-CARD = "#1F2937"          # 卡片 / Agent 气泡（gray-800）
-CARD_2 = "#374151"        # 工具卡片 / 活动高亮（gray-700）
-BORDER = "#4B5563"        # 边框（gray-600）
-INPUT_BG = "#374151"      # 输入框背景
-ACCENT = "#3B82F6"        # 主色（blue-500）
-ACCENT_HOVER = "#2563EB"
-BUBBLE_USER = "#1E40AF"   # 用户气泡（blue-800）
-TEXT = "#F3F4F6"          # 正文（gray-100）
-MUTED = "#E5E7EB"         # 次要文字（gray-200，加深可读性：50岁用户反馈灰字看不清）
-FAINT = "#D1D5DB"         # 弱化文字（gray-300）
-OK = "#34D399"            # 成功（emerald-400）
-ERR = "#F87171"           # 失败（red-400）
-WARN = "#FBBF24"          # 警告（amber-400）
-RUNBLUE = "#60A5FA"       # 执行中（blue-400）
-AMBER = "#FCD34D"         # 隐私条文字
-TOOLC = "#93C5FD"         # 工具名（blue-300）
+# ---------------- 配色（GitHub Dark 体系 · T24 配色改造 · WCAG AA） ----------------
+# 色板真名（任务书 T24 定义的 GitHub Dark 色，全项目颜色一律从这取）：
+BG_PRIMARY = "#0D1117"    # 最底层：主窗口 / 对话区
+BG_SECONDARY = "#161B22"  # 侧栏 / 面板 / 过程卡 / 输入框
+BG_TERTIARY = "#21262D"   # Agent 气泡 / 卡片
+BORDER = "#30363D"        # 边框 / 分隔线
+TEXT_PRIMARY = "#E6EDF3"  # 普通文字（浅白）
+TEXT_SECONDARY = "#8B949E"  # 次要/弱化文字（GitHub -mute）
+ACCENT_BLUE = "#58A6FF"   # 链接 / 用户气泡 / 主按钮（截图中「最亮的颜色」）
+ACCENT_GREEN = "#3FB950"  # 成功 / 文件路径
+ACCENT_YELLOW = "#D29922" # 命令 / 快捷键 / 警告
+ACCENT_RED = "#F85149"    # 错误
+
+# 既有语义常量 → GitHub Dark 色板映射（值换了，名字与引用处零改动）：
+BG = BG_PRIMARY           # 主背景（原 gray-900 #111827）
+SIDEBAR = BG_SECONDARY    # 侧边栏 / 日志区（原 #0D1526）
+CARD = BG_TERTIARY        # 卡片 / Agent 气泡（原 #1F2937）
+CARD_2 = BG_SECONDARY     # 工具卡 / thought 卡背景 / hover（原 #374151）
+                          # （hover 比本体深一档，暗色主题惯例）
+INPUT_BG = BG_SECONDARY   # 输入框背景（任务书：输入框 #161B22）
+ACCENT = ACCENT_BLUE      # 主色（原 #3B82F6）
+ACCENT_HOVER = "#4493F8"  # 主按钮 hover（GitHub btn-primary hover）
+BUBBLE_USER = ACCENT_BLUE # 用户气泡（原 #1E40AF → 任务书亮蓝，全界面最醒目）
+TEXT = TEXT_PRIMARY       # 正文（原 #F3F4F6）
+MUTED = "#C9D1D9"         # 次要文字。**不用 TEXT_SECONDARY**：50 岁用户实测
+                          # 反馈灰字看不清（theme 注释原记录），#C9D1D9 对
+                          # #0D1117 对比 10.4:1 舒适；#8B949E（4.9:1）只用于
+                          # 真正弱化处（FAINT）
+FAINT = TEXT_SECONDARY    # 弱化文字：分隔线文案 / 「试试：」/ turn 线等
+OK = ACCENT_GREEN         # 成功（原 #34D399）
+ERR = ACCENT_RED          # 失败（原 #F87171）
+WARN = ACCENT_YELLOW      # 警告（原 #FBBF24）
+RUNBLUE = ACCENT_BLUE     # 执行中（原 #60A5FA）
+AMBER = ACCENT_YELLOW     # 隐私条文字（原 #FCD34D）
+TOOLC = "#79C0FF"         # 工具名（比链接蓝浅一档，加粗小字更易读）
+
+# 对话流富文本高亮 tag 色（T24 任务 3）：tag 名 → 前景色
+LINK = ACCENT_BLUE        # 网址（可点击，下划线）
+PATHC = ACCENT_GREEN      # 文件路径（可点击定位）
+KEYC = ACCENT_YELLOW      # 命令 / 快捷键
 
 STATUS_COLOR = {"draft": FAINT, "queued": FAINT, "running": RUNBLUE,
                 "done": OK, "failed": ERR, "stopped": WARN}

@@ -197,7 +197,7 @@ class AgentGUI(DialogsMixin, SettingsMixin, SchedulerPanelMixin, TasksMixin, Plu
 
         # ---- 左侧栏 ----
         sidebar = ctk.CTkFrame(body, fg_color=SIDEBAR, corner_radius=12,
-                               border_width=1, border_color="#1F2937")
+                               border_width=1, border_color=BORDER)
         sidebar.pack(side="left", fill="y", padx=(0, 12))
 
         ctk.CTkButton(sidebar, text="＋ 新建任务", height=36, corner_radius=10,
@@ -988,7 +988,7 @@ class AgentGUI(DialogsMixin, SettingsMixin, SchedulerPanelMixin, TasksMixin, Plu
                 font=ctk.CTkFont(size=12, weight="bold" if active else "normal"),
                 command=lambda s=s: self._select(s)).pack(side="left", padx=(10, 0))
             ctk.CTkButton(tab, text="×", width=18, height=18, corner_radius=9,
-                          fg_color="transparent", hover_color="#4B5563",
+                          fg_color="transparent", hover_color=BORDER,
                           text_color=FAINT,
                           font=ctk.CTkFont(size=13),
                           command=lambda s=s: self.close_session(s)).pack(

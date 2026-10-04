@@ -1,5 +1,6 @@
 # 从 gui.py 抽出的格式化工具函数。
 # T4 Phase 1 纯搬运，零内容变更；gui.py 经兼容层再导出这些名字。
+import re
 import time
 
 from core.settings import MAX_TURNS
@@ -105,6 +106,48 @@ def result_summary(name: str, text: str, ok: bool) -> str:
                 break
         return ("没成功：" + reason[:80]) if reason else "没成功"
     return _RESULT_VERBS.get(name, "已完成")
+
+
+# ---------------- 富文本高亮分词（T24 任务 3） ----------------
+# 只做 token 级高亮（网址/路径/快捷键），不做整段错误/成功染色——「成功/失败」
+# 已由工具卡状态章与结果行着色承担，整段染色违反「高亮有节制」。
+
+# 网址：http(s) 开头，吃到空白或常见中文标点为止
+_URL_RE = re.compile(r"https?://[^\s\"'“”‘’，。；、！？：）（()【】《》<>]+")
+# 文件路径：盘符开头（\ 或 / 分隔，允许中文与空格内嵌），或 Unix 绝对路径
+_PATH_RE = re.compile(
+    r"[A-Za-z]:[\\/][^\s\"'“”‘’，。；、！？：）（()【】《》<>]*"
+    r"|/[\w.\-/]+")
+# 快捷键：Ctrl/Shift/Alt/Win 组合键（可多段）或 F1-F12 功能键。
+# 边界不用 \b：Python re 里中文属 \w，「按 Ctrl+S」「F4键」这类中文邻接处
+# \b 永不成立（实测）；改断言前后不是英文字母数字
+_KEY_RE = re.compile(
+    r"(?<![A-Za-z0-9])(?:Ctrl|Shift|Alt|Win)"
+    r"(?:\s*\+\s*(?:Ctrl|Shift|Alt|Win|[A-Za-z0-9]+))+(?![A-Za-z0-9])"
+    r"|(?<![A-Za-z0-9])F\d{1,2}(?![A-Za-z0-9])")
+
+_COMBINED_RE = re.compile(
+    "(" + _URL_RE.pattern + ")|(" + _PATH_RE.pattern + ")|(" + _KEY_RE.pattern + ")")
+# 组号：1=url, 2=path, 3=key
+
+
+def tokenize_rich(text: str):
+    """把助手回复切成 (片段, 类型) 序列，类型 ∈ text/url/path/key。
+
+    纯函数（无 GUI 依赖），供对话流富文本渲染与单测共用。匹配顺序
+    网址 > 路径 > 快捷键：https:// 里的字母不会被路径误吃（URL 整体优先）。
+    """
+    out = []
+    pos = 0
+    for m in _COMBINED_RE.finditer(str(text)):
+        if m.start() > pos:
+            out.append((str(text)[pos:m.start()], "text"))
+        kind = "url" if m.group(1) else ("path" if m.group(2) else "key")
+        out.append((m.group(0), kind))
+        pos = m.end()
+    if pos < len(str(text)):
+        out.append((str(text)[pos:], "text"))
+    return out
 
 
 def humanize_error(error_msg: str) -> str:
