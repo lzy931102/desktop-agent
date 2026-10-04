@@ -1391,6 +1391,28 @@ SYSTEM_PROMPT = """你是一个电脑操作助手，通过工具帮用户完成�
 收到用户指令后，规划步骤并调用工具。每步完成后简要汇报。任务完成后，用一句明确的话告诉用户结果；没把握的事不要说"完成"。"""
 
 
+def strip_think(text: str) -> str:
+    """剥掉思考模型混进正文的 <think>/</think> 标签与重复草稿（T28）。
+
+    GLM 等思考模型偶发把推理段/闭标签漏进最终回复（黑匣子 2026-10-04
+    07:43 实录："答案。</think>\n答案。"——闭标签前是草稿，后面才是正式
+    回复）。在 _run_loop 提取最终回复处调用一次，[助手] 日志、history、
+    UI、黑匣子吃同一份文本，全出口干净。规则：
+      1) 有 </think>：取最后一个闭标签之后的文本为正式回复，此前整段
+        （思考/草稿/重复稿）丢弃；
+      2) 闭标签后为空：整段去标签（孤立标签的容错），剥完为空就交还空，
+        由 T8 空回复分支兜底——绝不硬凑内容；
+      3) 无标签原文原样返回。
+    """
+    if not text:
+        return text
+    if "</think>" in text:
+        tail = text.rsplit("</think>", 1)[-1].strip()
+        if tail:
+            return tail
+    return text.replace("<think>", "").replace("</think>", "").strip()
+
+
 class DesktopAgent:
     def __init__(self, llm: LLMClient = None, workdir: Path = None,
                  auditor: AuditLogger = None, history: TaskHistory = None,
@@ -1679,7 +1701,9 @@ class DesktopAgent:
             # 没有工具调用 = 模型给出了最终答复（或无有效输出，避免空转浪费轮次）
             tool_calls = resp.get("tool_calls") or []
             if not tool_calls:
-                content = resp.get("content", "")
+                # T28：最终回复先剥 <think>/</think> 与重复草稿再出口——
+                # 这一处是 [助手] 日志、history、UI、黑匣子的共同源头
+                content = strip_think(resp.get("content", ""))
                 if content:
                     self._log(f"[助手] {content}")
                     return content
