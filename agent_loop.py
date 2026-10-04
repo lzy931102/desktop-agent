@@ -1234,7 +1234,7 @@ TOOL_FUNCTIONS = {
     "hotkey": lambda args: pyautogui.hotkey(*args["keys"]) or f"hotkey {'+'.join(args['keys'])}",
     "move_to": lambda args: pyautogui.moveTo(args["x"], args["y"], duration=args.get("duration", 0.5)) or f"moved to ({args['x']}, {args['y']})",
     "scroll": lambda args: pyautogui.scroll(args["clicks"]) or f"scrolled {args['clicks']}",
-    "screenshot": lambda args: (lambda _p: (Path("screenshots").mkdir(exist_ok=True), pyautogui.screenshot().save(Path("screenshots") / _p)) and f"screenshot saved: screenshots/{_p}")(args.get("path", f"screenshot_{int(time.time())}.png")),
+    "screenshot": lambda args: (lambda _p: (Path("screenshots").resolve().mkdir(parents=True, exist_ok=True), pyautogui.screenshot().save(Path("screenshots").resolve() / _p)) and f"screenshot saved: {Path('screenshots').resolve() / _p}")(args.get("path", f"screenshot_{int(time.time())}.png")),
     "locate_on_screen": _locate_on_screen,
     "wait": lambda args: _wait_tool(args),
     "open_app": lambda args: _open_app(args, args.pop("_agent_opened", None)),
@@ -1595,7 +1595,7 @@ class DesktopAgent:
                 path = str(args.get("path", "") or "")
                 if path:
                     return core_verify.verify_file_exists(
-                        str(Path("screenshots") / path))
+                        str(Path("screenshots").resolve() / path))
         except Exception as e:
             return True, f"校验异常(忽略): {e}"
         return None, ""
@@ -1826,7 +1826,7 @@ class DesktopAgent:
 
 def load_config() -> LLMConfig:
     script_dir = Path(__file__).parent
-    config_path = script_dir / "agent_config.json"
+    config_path = script_dir.resolve() / "agent_config.json"  # 修复路径穿越漏洞
     if config_path.exists():
         with open(config_path, 'r', encoding='utf-8') as f:
             data = json.load(f)
@@ -1842,7 +1842,7 @@ def load_config() -> LLMConfig:
 
 def save_config(config: LLMConfig):
     script_dir = Path(__file__).parent
-    config_path = script_dir / "agent_config.json"
+    config_path = script_dir.resolve() / "agent_config.json"  # 修复路径穿越漏洞
     data = {
         "provider": config.provider.value,
         "api_key": config.api_key,
