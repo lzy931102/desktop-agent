@@ -67,8 +67,7 @@ from ui.theme import (APP_VERSION, OLLAMA_URL, MODEL_NAME,
                       MSG_DONE_OK, MSG_DONE_FAIL, MSG_STOPPED,
                       MSG_NEED_INPUT, MSG_APPROVED, MSG_DENIED,
                       MSG_BLOCKED_SUB, MSG_CONFIRM_HEAD, MSG_INPUT_HINT,
-                      WELCOME_CARD_HEAD, WELCOME_CARD_LINES,
-                      WELCOME_CARD_BUTTON, MSG_RESHOW_WELCOME)
+                      MSG_RESHOW_WELCOME)
 from ui.formatters import (short_title, rel_time, fmt_tokens,
                             tool_display, humanize_error, parse_log,
                             result_summary, _effective_max_turns)
@@ -131,8 +130,8 @@ class AgentGUI(DialogsMixin, SettingsMixin, SchedulerPanelMixin, TasksMixin, Plu
         self.active = None
         self.ollama_ok = None       # None=检测中
         self._onboarding_auto_shown = False  # 本次运行只自动弹一次引导卡
-        self._welcome_open = False          # T24 欢迎卡正在显示（挂起路线卡用）
-        self._pending_onboarding = False    # 欢迎卡关闭后要补弹的模型路线卡
+        self._welcome_card = None           # T24a 嵌入式引导卡（None=未显示）
+        self._welcome_fading = False        # 引导卡淡出动画进行中
         self._sidebar_dirty = True
         self._tabs_dirty = True
 
@@ -252,6 +251,7 @@ class AgentGUI(DialogsMixin, SettingsMixin, SchedulerPanelMixin, TasksMixin, Plu
         # ---- 主区 ----
         main = ctk.CTkFrame(body, fg_color="transparent")
         main.pack(side="left", fill="both", expand=True)
+        self.main_col = main   # T24a：嵌入式引导卡的挂载父容器
 
         self.tabbar = ctk.CTkFrame(main, fg_color="transparent", height=40)
         self.tabbar.pack(fill="x", pady=(0, 4))
@@ -317,6 +317,8 @@ class AgentGUI(DialogsMixin, SettingsMixin, SchedulerPanelMixin, TasksMixin, Plu
         self.input_text.insert("1.0", PLACEHOLDER, "ph")
         self.input_text.bind("<FocusIn>", self._clear_placeholder)
         self.input_text.bind("<FocusOut>", self._restore_placeholder)
+        # T24a：引导卡「输入即淡化」的哨兵（首字符触发，占位符不算）
+        self.input_text.bind("<<Modified>>", self._on_input_changed)
         self.input_text.bind("<Control-Return>",
                              lambda e: (self._start_or_stop(), "break")[1])
 
@@ -1093,15 +1095,12 @@ class AgentGUI(DialogsMixin, SettingsMixin, SchedulerPanelMixin, TasksMixin, Plu
         self.conn_label.configure(text=text, text_color=OK if ok else ERR)
         # 首启引导：只在启动首检就失败时按状态机自动弹一次；会话中途的
         # 瞬时失败不弹模态卡（徽章随时可手动唤出）。
-        # T24：欢迎卡显示中时不叠弹——先记账，欢迎卡关闭时补弹，两张卡
-        # 首次启动撞在同一秒（模态互踩、标题栏抢焦点）是 2026-10-04 沙箱实测
+        # T24a：欢迎引导已改嵌入对话区顶部（非模态），与路线卡不再有
+        # 同屏叠弹问题，检测失败直接按原节奏补弹。
         if ok is False and first_check and not self._onboarding_auto_shown:
             self._onboarding_auto_shown = True
             if should_show_onboarding(self.settings, ok):
-                if self._welcome_open:
-                    self._pending_onboarding = True
-                else:
-                    self.root.after(400, self._show_onboarding, True)
+                self.root.after(400, self._show_onboarding, True)
 
     # ================= 定时任务 =================
     def _on_scheduled_task(self, sched_task: dict):

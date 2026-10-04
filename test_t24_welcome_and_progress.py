@@ -1,8 +1,8 @@
 """T24 首启引导 + 执行过程可视化回归测试。
 
-六组覆盖（沿用 T23 的离线桩模式，不连模型；渲染组用 withdraw 的真 Tk）：
+七组覆盖（沿用 T23 的离线桩模式，不连模型；渲染组用 withdraw 的真 Tk）：
   1. 首启标志位：welcome_shown 默认 False、置 True 后持久化；
-     _maybe_show_welcome 首次弹、二次不弹
+     _maybe_show_welcome 首次显示、二次不显示
   2. 过程事件接线：thought 事件进 events（剥 💭、截 120 字）；
      tool 卡带步骤号；工具结果带人话摘要
   3. result_summary 纯函数各分支（成功动词表 / 未知工具回落 / 失败剥前缀截断）
@@ -11,8 +11,12 @@
   5. SYSTEM_PROMPT 说话规则在位（💭 格式要求防回归丢失）
   6. 渲染层：thought 卡、tool 卡能建出且文本正确；render_all 重建后
      已完成工具卡的结果行立即带出（修复原先重建后空白）
+  7. T24a 嵌入式引导：卡片嵌对话区顶部（无弹窗无按钮）、首字符触发
+     渐隐并记标志、占位符/清空不触发、重看不叠卡、设置按钮仍在位
 """
 import json
+import pathlib
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -21,9 +25,10 @@ import agent_loop
 from agent_loop import DesktopAgent
 from core.approval import AutoDenyPolicy
 from core.settings import Settings, should_show_onboarding
+from ui.dialogs import DialogsMixin, _lerp_color
 from ui.formatters import result_summary
-from ui.theme import (MSG_INPUT_HINT, PLACEHOLDER, WELCOME_CARD_BUTTON,
-                      WELCOME_CARD_HEAD)
+from ui.theme import (MSG_INPUT_HINT, PLACEHOLDER, WELCOME_CARD_HEAD,
+                      WELCOME_CARD_LINES)
 
 
 # ==================== 桩 ====================
@@ -300,11 +305,12 @@ def test_system_prompt_has_thought_rule():
 
 
 def test_placeholder_and_hint_copy_in_place():
-    """输入框提示文案与小字（T24 任务 3）不回归丢失"""
+    """输入框提示文案与小字（T24 任务 3）与嵌入引导新文案（T24a）不回归丢失"""
     assert "打开记事本" in PLACEHOLDER
     assert "我能帮你操作电脑" in MSG_INPUT_HINT
     assert WELCOME_CARD_HEAD.startswith("👋")
-    assert "我知道了" in WELCOME_CARD_BUTTON
+    assert any("我可以帮你" in ln for ln in WELCOME_CARD_LINES)
+    assert any("输入框" in ln for ln in WELCOME_CARD_LINES)
 
 
 # ==================== 6. 渲染层（真 Tk，withdraw 不弹窗） ====================
@@ -374,3 +380,135 @@ def test_render_all_rebuild_keeps_finished_result_visible(tk_env):
     cs = ChatStream(root, app)
     cs.render_all(s)
     assert "✓ 已打开" in "\n".join(_all_text(cs.frame))
+
+
+# ==================== 7. T24a 嵌入式引导 ====================
+
+class _FakeSettings:
+    """dict 后备的最小 settings 桩（get/set 签名同 core.settings）"""
+
+    def __init__(self, d=None):
+        self.d = dict(d or {})
+
+    def get(self, key, default=False):
+        return self.d.get(key, default)
+
+    def set(self, key, value):
+        self.d[key] = value
+
+
+class _WelcomeShell(DialogsMixin):
+    """最小 AgentGUI 壳：只为跑引导逻辑（主列 + 对话流 + 输入框）。
+    注意不 pack 进共享 root：会话级 root 是全测试共用解释器，多塞可见
+    控件会挤压后续用例的布局（2026-10-04 实测把 t24e 的 bbox 量崩）；
+    引导逻辑只依赖父子关系与 pack 次序，不需要真正上屏。"""
+
+    def __init__(self, root, settings):
+        import tkinter as tkbase
+        import customtkinter as ctk
+        from ui.chat_stream import ChatStream
+        self.root = root
+        self.settings = settings
+        self.main_col = ctk.CTkFrame(root, fg_color="transparent")
+        self.chat = ChatStream(self.main_col, self)
+        self.chat.frame.pack(fill="both", expand=True)
+        self.input_text = tkbase.Text(self.main_col, height=3)
+        self.input_text.tag_config("ph")
+
+
+def _pump(root, seconds):
+    end = time.time() + seconds
+    while time.time() < end:
+        root.update()
+        time.sleep(0.02)
+
+
+def test_lerp_color_endpoints_and_midpoint():
+    """渐隐插值：端点精确还原，中点落在两色之间"""
+    assert _lerp_color("#FFFFFF", "#000000", 0.0) == "#ffffff"
+    assert _lerp_color("#FFFFFF", "#000000", 1.0) == "#000000"
+    mid = _lerp_color("#202020", "#404040", 0.5)
+    assert mid == "#303030"
+
+
+def test_welcome_embedded_card_no_popup_no_button(tk_env):
+    """T24a：引导卡嵌在对话区顶部，无独立弹窗、无「我知道了」按钮"""
+    ctk, root = tk_env
+    app = _WelcomeShell(root, _FakeSettings())
+    root.update()
+    app._show_welcome()
+    root.update()
+    assert app._welcome_card is not None and app._welcome_card.winfo_exists()
+    joined = "\n".join(_all_text(app.main_col))
+    assert "👋 欢迎使用 Desktop Agent" in joined
+    assert "我可以帮你" in joined
+    assert "我知道了" not in joined
+    # 走布局流挂在对话流上方（卡片与被 pack 的对话流容器同父=主列）
+    assert app._welcome_card.master is app.main_col
+    # 柔和配色：卡底是任务书点名的 #1C2128，边框 #30363D
+    assert "#1C2128" in str(app._welcome_card.cget("fg_color"))
+    assert app._welcome_card.cget("border_width") == 1
+
+
+def test_welcome_fades_on_first_char_and_marks_seen(tk_env):
+    """敲下第一个真实字符：约 500ms 渐隐后卡片销毁，welcome_shown 落盘"""
+    ctk, root = tk_env
+    st = _FakeSettings()
+    app = _WelcomeShell(root, st)
+    app._show_welcome()
+    root.update()
+    app.input_text.insert("1.0", "打")
+    app._on_input_changed()
+    assert st.d.get("welcome_shown") is True      # 淡出即记「看过」
+    _pump(root, 0.9)                              # 8×60ms=480ms + 调度余量
+    assert app._welcome_card is None
+    # 已看过：继续输入/清空都不复活（卡片只被显式重看或下次首启拉起）
+    app.input_text.delete("1.0", "end")
+    app._on_input_changed()
+    _pump(root, 0.2)
+    assert app._welcome_card is None
+
+
+def test_welcome_placeholder_and_empty_input_do_not_trigger(tk_env):
+    """占位符回填 / 空内容变化不算「开始输入」，引导卡保持可见"""
+    ctk, root = tk_env
+    st = _FakeSettings()
+    app = _WelcomeShell(root, st)
+    app._show_welcome()
+    root.update()
+    app.input_text.insert("1.0", PLACEHOLDER, "ph")   # 模拟失焦回填占位符
+    app._on_input_changed()
+    app.input_text.delete("1.0", "end")               # 空内容变化
+    app._on_input_changed()
+    _pump(root, 0.7)
+    assert app._welcome_card is not None
+    assert app._welcome_card.winfo_exists()
+    assert st.d.get("welcome_shown") is not True      # 没看过就别记
+
+
+def test_welcome_reshow_no_duplicate(tk_env):
+    """重看：淡出后能再拉起；已显示时再调不叠第二张卡"""
+    ctk, root = tk_env
+    app = _WelcomeShell(root, _FakeSettings({"welcome_shown": True}))
+    app._show_welcome()
+    root.update()
+    first = app._welcome_card
+    app._show_welcome()
+    root.update()
+    assert app._welcome_card is first                 # 已显示时不叠卡
+    app.input_text.insert("1.0", "打")
+    app._on_input_changed()
+    _pump(root, 0.9)
+    assert app._welcome_card is None
+    app._show_welcome()                               # 设置面板重看入口同款调用
+    root.update()
+    assert app._welcome_card is not None
+    assert app._welcome_card is not first             # 新卡（旧的已销毁）
+
+
+def test_settings_reshow_button_still_routes_to_welcome():
+    """设置面板「重看使用引导」按钮仍指向 _show_welcome（防接线回归）"""
+    src = (pathlib.Path(__file__).parent / "ui" / "panels" / "settings.py"
+           ).read_text("utf-8")
+    assert "MSG_RESHOW_WELCOME" in src
+    assert "_show_welcome" in src

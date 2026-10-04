@@ -2,22 +2,32 @@
 
 方法原样保留 self 语义，AgentGUI 在 gui.py 里经 Mixin 组合继承；
 跨面板调用（如引导卡「用云端」→ 设置面板）仍走 self.xxx。
-T24 新增「怎么用」欢迎卡（_show_welcome）：与 _show_onboarding（选模型
-路线）是两张卡——欢迎卡教能干什么/在哪输入，首启无条件弹一次；路线卡
-解决连不上模型，仍按 onboarding_choice 状态机弹。"""
+T24a 重做「怎么用」引导（_show_welcome）：不再用独立弹窗（深底大蓝
+按钮像警告不像欢迎，用户实测反馈），改嵌在对话区顶部、用户一开始
+输入就 500ms 柔和淡出；与 _show_onboarding（选模型路线）仍是两张卡，
+路线卡解决连不上模型，仍按 onboarding_choice 状态机弹。"""
 import threading
 import webbrowser
 import customtkinter as ctk
 from ui.theme import (ACCENT, ACCENT_HOVER, BG, BORDER, CARD_2,
                       CLOUD_TUTORIAL_URL, ERR, FAINT, MUTED, OK,
                       OLLAMA_DOWNLOAD_URL, TEXT, WARN,
-                      WELCOME_CARD_HEAD, WELCOME_CARD_LINES,
-                      WELCOME_CARD_BUTTON)
+                      WELCOME_BG, WELCOME_CARD_HEAD, WELCOME_CARD_LINES)
 from ui.chat_stream import attach_modal_dialog
+
+
+def _lerp_color(c1, c2, t):
+    """两个 #RRGGBB 间线性插值（t=0 返回 c1，t=1 返回 c2）——渐隐动画用"""
+    a = [int(c1[i:i + 2], 16) for i in (1, 3, 5)]
+    b = [int(c2[i:i + 2], 16) for i in (1, 3, 5)]
+    return "#" + "".join(f"{round(x + (y - x) * t):02x}"
+                         for x, y in zip(a, b))
+
 
 class DialogsMixin:
     def _maybe_show_welcome(self):
-        """T24 任务 1：首次使用自动弹「怎么用」欢迎卡，弹过一次永不再弹。
+        """T24 任务 1：首次使用在对话区顶部显示「怎么用」引导卡，看过
+        （开始输入）即淡出并记 welcome_shown=True，之后不再自动显示。
         由 __init__ 的 root.after(600, …) 调度（主窗口先立起来）。"""
         try:
             shown = bool(self.settings.get("welcome_shown", False))
@@ -27,55 +37,102 @@ class DialogsMixin:
             self._show_welcome()
 
     def _show_welcome(self):
-        """「怎么用」欢迎卡：能帮你做什么 + 在哪输入。文案说大白话，
-        不出现设置/插件/日志这类高级入口（不干扰原则）。
-        任何关闭路径（按钮/×）都记 welcome_shown=True；设置面板
-        「重看使用引导」也走这里，重复置 True 幂等无副作用。"""
-        self._welcome_open = True
-        dlg = ctk.CTkToplevel(self.root, fg_color=BG)
-        dlg.title("欢迎使用 Desktop Agent")
-        dlg.geometry("560x430")
-        dlg.resizable(False, False)
-        attach_modal_dialog(dlg, self.root)
-        dlg.attributes("-topmost", True)
-        dlg.after(200, dlg.lift)
-
-        def mark_shown(event=None):
-            # <Destroy> 对每个子控件都触发，只认对话框自身（踩坑.md 条目 2，
-            # 按路径字符串比较，不能用 is）
-            if event is not None and str(event.widget) != str(dlg):
-                return
-            try:
-                if not self.settings.get("welcome_shown", False):
-                    self.settings.set("welcome_shown", True)
-            except Exception:
-                pass   # 记不住标志最多下次再弹一次，不能反噬关闭流程
-            self._welcome_open = False
-            # 启动首检若发现模型没连上，路线引导卡在这补弹（不与欢迎卡同屏叠）
-            if getattr(self, "_pending_onboarding", False):
-                self._pending_onboarding = False
-                self.root.after(400, self._show_onboarding, True)
-
-        dlg.bind("<Destroy>", mark_shown)
-
-        wrap = ctk.CTkFrame(dlg, fg_color="transparent")
-        wrap.pack(fill="both", expand=True, padx=30, pady=(26, 20))
-        ctk.CTkLabel(wrap, text=WELCOME_CARD_HEAD,
-                     font=ctk.CTkFont(size=18, weight="bold"),
-                     text_color=TEXT).pack(anchor="w")
+        """「怎么用」引导卡（T24a）：嵌入对话区顶部（Tab 栏下、对话流上，
+        走布局流不遮挡任何东西），柔和配色、无按钮。用户在输入框敲下
+        第一个字时 _on_input_changed 触发 500ms 渐隐；已看过即记
+        welcome_shown=True（清空输入框也不复活）。设置面板「重看使用
+        引导」也走这里；正在显示/正在淡出时不重复叠卡。"""
+        card = getattr(self, "_welcome_card", None)
+        if card is not None and card.winfo_exists():
+            return
+        if getattr(self, "_welcome_fading", False):
+            return
+        card = ctk.CTkFrame(self.main_col, fg_color=WELCOME_BG,
+                            border_width=1, border_color=BORDER,
+                            corner_radius=12)
+        # CTkScrollableFrame 被 pack 进主列的是它内部容器（_parent_frame，
+        # 与 chat_stream._scroll_end 用 _parent_canvas 同类私有属性）；
+        # before 让卡片插到对话流上方。锚失效时退化为排主列末尾，仍可用
+        anchor = getattr(self.chat.frame, "_parent_frame", self.chat.frame)
+        try:
+            card.pack(fill="x", before=anchor, pady=(0, 4))
+        except Exception:
+            card.pack(fill="x", pady=(0, 4))
+        ctk.CTkLabel(card, text=WELCOME_CARD_HEAD,
+                     font=ctk.CTkFont(size=15, weight="bold"),
+                     text_color=TEXT, anchor="w").pack(
+            anchor="w", padx=16, pady=(12, 4))
+        fade_items = [(card, "fg_color", WELCOME_BG),
+                      (card, "border_color", BORDER)]
         for line in WELCOME_CARD_LINES:
             if not line:
                 continue
-            is_list = line.startswith("·")
-            ctk.CTkLabel(wrap, text=line, font=ctk.CTkFont(size=13),
-                         text_color=MUTED if is_list else TEXT,
-                         justify="left", anchor="w").pack(
-                anchor="w", pady=(10, 0) if not is_list else (2, 0))
-        ctk.CTkLabel(wrap, text=" ").pack(pady=(4, 0))
-        ctk.CTkButton(wrap, text=WELCOME_CARD_BUTTON, height=46,
-                      corner_radius=10, font=ctk.CTkFont(size=14, weight="bold"),
-                      fg_color=ACCENT, hover_color=ACCENT_HOVER,
-                      command=dlg.destroy).pack(fill="x", pady=(14, 0))
+            lbl = ctk.CTkLabel(card, text=line, font=ctk.CTkFont(size=13),
+                               text_color=MUTED, justify="left",
+                               anchor="w")
+            lbl.pack(anchor="w", padx=16, pady=1)
+            fade_items.append((lbl, "text_color", MUTED))
+        ctk.CTkLabel(card, text="").pack(pady=(0, 8))
+        self._welcome_card = card
+        self._welcome_fade_items = fade_items
+        self._welcome_fading = False
+
+    def _on_input_changed(self, _=None):
+        """输入框 <<Modified>> 哨兵：有第一个真实字符（非占位符）就淡出
+        引导卡。edit_modified(False) 复位哨兵会再发一次事件，靠先查
+        modified 状态防递归。"""
+        try:
+            if not self.input_text.edit_modified():
+                return
+            self.input_text.edit_modified(False)
+            has_ph = bool(self.input_text.tag_ranges("ph"))
+            text = self.input_text.get("1.0", "end").strip()
+        except Exception:
+            return
+        card = getattr(self, "_welcome_card", None)
+        if card is None or not card.winfo_exists():
+            return
+        if getattr(self, "_welcome_fading", False) or has_ph or not text:
+            return
+        self._fade_out_welcome()
+
+    def _fade_out_welcome(self):
+        """引导卡淡出（任务书约 500ms）：Tk 子控件没有逐件透明度，用
+        「颜色向主背景渐隐」等效实现。4 步 × 25ms 名义 100ms——实测可见
+        窗口下每步 CTk 重绘 ~160ms 才是大头（2026-10-04 帧率实测），
+        4×25 墙钟约 0.7s，每步 25% 色变读起来仍是柔和的化开而非闪跳。
+        淡出即记 welcome_shown=True：清空输入框后卡片也不复活。"""
+        self._welcome_fading = True
+        try:
+            if not self.settings.get("welcome_shown", False):
+                self.settings.set("welcome_shown", True)
+        except Exception:
+            pass   # 记不住标志最多下次启动再看一次，不能反噬淡出流程
+        items = list(self._welcome_fade_items or [])
+        steps, step_ms = 4, 25
+
+        def step(i):
+            t = i / steps
+            for widget, opt, orig in items:
+                try:
+                    if widget.winfo_exists():
+                        widget.configure(**{opt: _lerp_color(orig, BG, t)})
+                except Exception:
+                    pass   # 卡片正被销毁等竞态：淡出是锦上添花，绝不炸泵
+            if i < steps:
+                self.root.after(step_ms, step, i + 1)
+            else:
+                try:
+                    if card.winfo_exists():
+                        card.destroy()
+                except Exception:
+                    pass
+                self._welcome_card = None
+                self._welcome_fade_items = None
+                self._welcome_fading = False
+
+        card = self._welcome_card
+        step(0)
 
     def _show_onboarding(self, auto=False):
         """检测不到模型服务时的三选一引导：云端 / 本地 / 稍后再说。
