@@ -74,6 +74,7 @@ from ui.formatters import (short_title, rel_time, fmt_tokens,
                             result_summary, _effective_max_turns)
 from ui.sessions import TaskSession
 from ui.chat_stream import ChatStream, attach_modal_dialog
+from ui.richtext import insert_rich, setup_rich_tags
 from ui.runners import PhoneTaskRunner, MailTaskRunner
 from ui.panels.phone import PhoneSectionMixin
 from ui.panels.mail import MailSectionMixin
@@ -289,6 +290,8 @@ class AgentGUI(DialogsMixin, SettingsMixin, SchedulerPanelMixin, TasksMixin, Plu
             fg_color=SIDEBAR, corner_radius=8, wrap="word", text_color=MUTED)
         self.logbox.pack(fill="x", pady=(2, 0))
         self.logbox.configure(state="disabled")
+        # T24e：日志区与对话流共用一套富文本高亮（网址蓝/路径绿可点，悬停手型）
+        setup_rich_tags(self.logbox)
         self._log_menu = tk.Menu(self.logbox, tearoff=0,
                                  font=("Microsoft YaHei UI", 10))
         self._log_menu.add_command(label="复制选中文字",
@@ -555,7 +558,7 @@ class AgentGUI(DialogsMixin, SettingsMixin, SchedulerPanelMixin, TasksMixin, Plu
             s.log_lines = s.log_lines[-600:]
         if self.active is s:
             self.logbox.configure(state="normal")
-            self.logbox.insert("end", line + "\n")
+            insert_rich(self.logbox, line + "\n")
             self.logbox.see("end")
             self.logbox.configure(state="disabled")
 
@@ -564,7 +567,7 @@ class AgentGUI(DialogsMixin, SettingsMixin, SchedulerPanelMixin, TasksMixin, Plu
         self.logbox.configure(state="normal")
         self.logbox.delete("1.0", "end")
         for line in s.log_lines[-600:]:
-            self.logbox.insert("end", line + "\n")
+            insert_rich(self.logbox, line + "\n")
         self.logbox.see("end")
         self.logbox.configure(state="disabled")
 

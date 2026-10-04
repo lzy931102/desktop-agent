@@ -8,10 +8,11 @@
   3. 渲染层（真 Tk withdraw）：用户/Agent 气泡新色与圆角、富文本 tag
      颜色与点击绑定、自适应高度合理
   4. 点击动作：内网网址不开浏览器、不存在的路径不动作（防误触）
+     （T24e 起点击动作移居 ui/richtext，与日志区共用，本处引用随迁）
 """
 import pytest
 
-from ui import chat_stream
+from ui import chat_stream, richtext
 from ui.formatters import tokenize_rich
 from ui.theme import (ACCENT_BLUE, BG, BG_PRIMARY, BG_SECONDARY, BG_TERTIARY,
                       BORDER, BUBBLE_USER, CARD, CARD_2, INPUT_BG, KEYC, LINK,
@@ -166,25 +167,25 @@ def test_assistant_rich_tags_configured_and_height_fits(tk_env):
 def test_open_target_work_rejects_non_public_url(monkeypatch):
     """内网/非法网址不允许点击打开（scheme 白名单 + 非内网校验）"""
     opened = []
-    monkeypatch.setattr(chat_stream.webbrowser, "open",
+    monkeypatch.setattr(richtext.webbrowser, "open",
                         lambda u: opened.append(u))
-    chat_stream._open_target_work("url", "http://127.0.0.1:8080/x")
-    chat_stream._open_target_work("url", "javascript:alert(1)")
-    chat_stream._open_target_work("url", "file:///C:/Windows/System32")
+    richtext._open_target_work("url", "http://127.0.0.1:8080/x")
+    richtext._open_target_work("url", "javascript:alert(1)")
+    richtext._open_target_work("url", "file:///C:/Windows/System32")
     assert opened == []
-    chat_stream._open_target_work("url", "https://example.com/ok")
+    richtext._open_target_work("url", "https://example.com/ok")
     assert opened == ["https://example.com/ok"]
 
 
 def test_open_target_work_path_must_exist(monkeypatch):
     """不存在的路径（可能被分词截断）不动作；存在的目录 explorer 定位"""
     calls = []
-    monkeypatch.setattr(chat_stream.subprocess, "Popen",
+    monkeypatch.setattr(richtext.subprocess, "Popen",
                         lambda cmd: calls.append(cmd))
-    chat_stream._open_target_work("path", "F:\\不存在的路径_xyz\\a.txt")
+    richtext._open_target_work("path", "F:\\不存在的路径_xyz\\a.txt")
     assert calls == []
     tmp = __import__("pathlib").Path(__import__("tempfile").mkdtemp())
-    chat_stream._open_target_work("path", str(tmp))
+    richtext._open_target_work("path", str(tmp))
     assert len(calls) == 1 and "/select," in calls[0]
 
 
@@ -199,7 +200,7 @@ def test_open_target_runs_in_background_thread(monkeypatch):
         seen_threads.append(th.current_thread())
         done.set()
 
-    monkeypatch.setattr(chat_stream, "_open_target_work", fake_work)
-    chat_stream._open_target("url", "https://example.com/x")
+    monkeypatch.setattr(richtext, "_open_target_work", fake_work)
+    richtext.open_target("url", "https://example.com/x")
     assert done.wait(2.0)
     assert seen_threads and seen_threads[0] is not th.main_thread()

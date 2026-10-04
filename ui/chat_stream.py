@@ -1,11 +1,8 @@
 # 对话流渲染。
 # T4 Phase 1 从 gui.py 原样抽出（ChatStream + attach_modal_dialog）。
 import os
-import subprocess
 import sys
-import threading
 import tkinter as tk
-import webbrowser
 
 import customtkinter as ctk
 
@@ -14,12 +11,12 @@ try:
 except ImportError:
     Image = None
 
-from core.settings import validate_public_url
-from ui.formatters import tool_display, tokenize_rich
+from ui import richtext
+from ui.formatters import tool_display
 from ui.theme import (ACCENT, ACCENT_HOVER, BG, BORDER, BUBBLE_USER, CARD,
                       CARD_2, DEFAULT_MAX_CONCURRENT, ERR, EXAMPLES, FAINT,
-                      KEYC, LINK, MSG_BLOCKED_SUB, MUTED, OK, PATHC, TEXT,
-                      TOOL_CHIP, TOOLC, WARN, WELCOME_HEAD)
+                      MSG_BLOCKED_SUB, MUTED, OK, TEXT, TOOL_CHIP, TOOLC,
+                      WARN, WELCOME_HEAD)
 
 _ASSISTANT_FONT = ("Microsoft YaHei UI", 12)
 
@@ -45,65 +42,21 @@ def _auto_lines(text_widget):
                     for para in text.split("\n"))
         return max(1, lines)
 
-def _open_target(kind, value):
-    """高亮段点击动作（后台线程执行，T30）：网址→系统浏览器；路径→定位。
-
-    必须异步：os.path.exists 对失效盘符/网络路径可能阻塞数十秒、
-    webbrowser.open 走系统 shell——2026-10-04 一次无痕冻结后立规，
-    点击回调里绝不放同步 IO。目标不合法/不存在时静默不动作：
-    网址过 scheme 白名单 + 非内网校验（用户主动点击，浏览器自身解析
-    为准，同 open_url 的无 DNS 模式）；路径不存在可能是被分词截断。
-    """
-    threading.Thread(target=_open_target_work, args=(kind, value),
-                     daemon=True, name="open-target").start()
-
-def _open_target_work(kind, value):
-    if kind == "url":
-        ok, _err = validate_public_url(value, require_https=False,
-                                       check_dns=False)
-        if ok:
-            try:
-                webbrowser.open(value)
-            except Exception:
-                pass
-    elif kind == "path":
-        p = os.path.normpath(value.strip())
-        if os.path.exists(p):
-            try:
-                subprocess.Popen(["explorer", "/select,", p])
-            except Exception:
-                pass
-
 def _make_rich_text(parent, text, scale=1.0):
     """助手气泡的富文本正文（T24 任务 3）：原生 tk.Text。
 
     不用 CTkTextbox：它的像素↔字符宽度换算在 CTkFont/DPI 下系统性失准
     （2026-10-04 实测布局前内部 width=1、布局后文本超宽被裁）。原生 Text
     wrap 按真实像素折行，width 字符数只影响请求宽度（fill="x" 后不生效）。
-    网址亮蓝可点开浏览器、路径亮绿可点定位、快捷键亮黄；tag 名即 kind。
+    网址亮蓝可点开浏览器、路径亮绿可点定位、快捷键亮黄；tag 配置与点击
+    统一走 ui/richtext（T24e 起与运行日志区共用一套，不许各自实现）。
     """
     body = tk.Text(parent, wrap="word", relief="flat", bd=0,
                    highlightthickness=0, bg=CARD, fg=TEXT,
                    font=( _ASSISTANT_FONT[0], -int(_ASSISTANT_FONT[1] * scale)),
                    width=40, height=3, padx=0, pady=0, cursor="arrow")
-    body.tag_config("url", foreground=LINK, underline=True)
-    body.tag_config("path", foreground=PATHC, underline=True)
-    body.tag_config("key", foreground=KEYC)
-    for seg, kind in tokenize_rich(text):
-        if kind == "text":
-            body.insert("end", seg)
-            continue
-        body.insert("end", seg, kind)
-        if kind in ("url", "path"):
-            def on_click(event, body=body, kind=kind):
-                try:
-                    idx = body.index(f"@{event.x},{event.y}")
-                    rng = body.tag_prevrange(kind, idx + "+1c")
-                    if rng:
-                        _open_target(kind, body.get(rng[0], rng[1]))
-                except Exception:
-                    pass   # 点不出范围就当没点，绝不因高亮点击炸泵
-            body.tag_bind(kind, "<Button-1>", on_click)
+    richtext.setup_rich_tags(body)
+    richtext.insert_rich(body, text)
     body.configure(state="disabled")
     return body
 
