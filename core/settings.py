@@ -42,6 +42,10 @@ DEFAULTS = {
     # 首启引导（UX-P1-6）：""=未引导；"cloud"/"local"=已选路线，不再自动弹；
     # "later"=下次启动仍未连上时再提醒一次；"dismissed"=不再自动弹（徽章仍可唤出）
     "onboarding_choice": "",
+    # 「怎么用」欢迎引导（T24）：False=首次使用，启动时弹一次使用说明卡；
+    # 点「我知道了」或关卡后置 True，永不再自动弹（设置面板可手动重看）。
+    # 与 onboarding_choice（选模型路线）是两张卡、两个标志，互不干扰
+    "welcome_shown": False,
     # 邮件远程（mail_remote，任务 18）：手机发邮件遥控电脑。授权码只落本机
     # settings.json（不在代码仓库）；开关不持久化——每次启动手动开启
     "mail_remote": {

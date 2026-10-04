@@ -111,6 +111,8 @@ class TaskSession:
             agent.on_tool_result = lambda n, a, r: self.ui_queue.put(
                 ("tool_result", (n, a, r)))
             agent.on_retry = lambda n, i, mx: self.ui_queue.put(("retry", (n, i, mx)))
+            # T24 过程可视化：每轮动手前的一句「为什么」进对话流
+            agent.on_thought = lambda t: self.ui_queue.put(("thought", t))
             self.agent = agent
             result = agent.run(self.task_text)
             self.tokens = agent.total_tokens

@@ -1,16 +1,82 @@
-"""首启引导卡与高危确认入口（T4 Phase 2 从 gui.py 抽出，纯搬运零逻辑变更）。
+"""首启引导卡与高危确认入口（T4 Phase 2 从 gui.py 抽出）。
 
 方法原样保留 self 语义，AgentGUI 在 gui.py 里经 Mixin 组合继承；
-跨面板调用（如引导卡「用云端」→ 设置面板）仍走 self.xxx。"""
+跨面板调用（如引导卡「用云端」→ 设置面板）仍走 self.xxx。
+T24 新增「怎么用」欢迎卡（_show_welcome）：与 _show_onboarding（选模型
+路线）是两张卡——欢迎卡教能干什么/在哪输入，首启无条件弹一次；路线卡
+解决连不上模型，仍按 onboarding_choice 状态机弹。"""
 import threading
 import webbrowser
 import customtkinter as ctk
 from ui.theme import (ACCENT, ACCENT_HOVER, BG, BORDER, CARD_2,
                       CLOUD_TUTORIAL_URL, ERR, FAINT, MUTED, OK,
-                      OLLAMA_DOWNLOAD_URL, TEXT, WARN)
+                      OLLAMA_DOWNLOAD_URL, TEXT, WARN,
+                      WELCOME_CARD_HEAD, WELCOME_CARD_LINES,
+                      WELCOME_CARD_BUTTON)
 from ui.chat_stream import attach_modal_dialog
 
 class DialogsMixin:
+    def _maybe_show_welcome(self):
+        """T24 任务 1：首次使用自动弹「怎么用」欢迎卡，弹过一次永不再弹。
+        由 __init__ 的 root.after(600, …) 调度（主窗口先立起来）。"""
+        try:
+            shown = bool(self.settings.get("welcome_shown", False))
+        except Exception:
+            shown = True   # 设置读不出来时宁可少打扰
+        if not shown:
+            self._show_welcome()
+
+    def _show_welcome(self):
+        """「怎么用」欢迎卡：能帮你做什么 + 在哪输入。文案说大白话，
+        不出现设置/插件/日志这类高级入口（不干扰原则）。
+        任何关闭路径（按钮/×）都记 welcome_shown=True；设置面板
+        「重看使用引导」也走这里，重复置 True 幂等无副作用。"""
+        self._welcome_open = True
+        dlg = ctk.CTkToplevel(self.root, fg_color=BG)
+        dlg.title("欢迎使用 Desktop Agent")
+        dlg.geometry("560x430")
+        dlg.resizable(False, False)
+        attach_modal_dialog(dlg, self.root)
+        dlg.attributes("-topmost", True)
+        dlg.after(200, dlg.lift)
+
+        def mark_shown(event=None):
+            # <Destroy> 对每个子控件都触发，只认对话框自身（踩坑.md 条目 2，
+            # 按路径字符串比较，不能用 is）
+            if event is not None and str(event.widget) != str(dlg):
+                return
+            try:
+                if not self.settings.get("welcome_shown", False):
+                    self.settings.set("welcome_shown", True)
+            except Exception:
+                pass   # 记不住标志最多下次再弹一次，不能反噬关闭流程
+            self._welcome_open = False
+            # 启动首检若发现模型没连上，路线引导卡在这补弹（不与欢迎卡同屏叠）
+            if getattr(self, "_pending_onboarding", False):
+                self._pending_onboarding = False
+                self.root.after(400, self._show_onboarding, True)
+
+        dlg.bind("<Destroy>", mark_shown)
+
+        wrap = ctk.CTkFrame(dlg, fg_color="transparent")
+        wrap.pack(fill="both", expand=True, padx=30, pady=(26, 20))
+        ctk.CTkLabel(wrap, text=WELCOME_CARD_HEAD,
+                     font=ctk.CTkFont(size=18, weight="bold"),
+                     text_color=TEXT).pack(anchor="w")
+        for line in WELCOME_CARD_LINES:
+            if not line:
+                continue
+            is_list = line.startswith("·")
+            ctk.CTkLabel(wrap, text=line, font=ctk.CTkFont(size=13),
+                         text_color=MUTED if is_list else TEXT,
+                         justify="left", anchor="w").pack(
+                anchor="w", pady=(10, 0) if not is_list else (2, 0))
+        ctk.CTkLabel(wrap, text=" ").pack(pady=(4, 0))
+        ctk.CTkButton(wrap, text=WELCOME_CARD_BUTTON, height=46,
+                      corner_radius=10, font=ctk.CTkFont(size=14, weight="bold"),
+                      fg_color=ACCENT, hover_color=ACCENT_HOVER,
+                      command=dlg.destroy).pack(fill="x", pady=(14, 0))
+
     def _show_onboarding(self, auto=False):
         """检测不到模型服务时的三选一引导：云端 / 本地 / 稍后再说。
 

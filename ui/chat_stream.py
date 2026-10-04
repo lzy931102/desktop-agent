@@ -1,6 +1,5 @@
 # 对话流渲染。
 # T4 Phase 1 从 gui.py 原样抽出（ChatStream + attach_modal_dialog）。
-import json
 import os
 import sys
 
@@ -79,6 +78,8 @@ class ChatStream:
             self._system(ev)
         elif kind == "turn":
             self._turn(ev)
+        elif kind == "thought":
+            self._thought(ev)
         elif kind == "tool":
             self._tool(ev)
         elif kind == "confirm":
@@ -96,10 +97,12 @@ class ChatStream:
         if kind == "tool":
             text, color = TOOL_CHIP[ev["state"]]
             refs["chip"].configure(text=text, text_color=color)
+            # T24：结果行人话摘要优先（ev["summary"]），无摘要才落原文
             if ev.get("result"):
                 tone = {"ok": OK, "err": ERR, "block": WARN}.get(ev["state"], MUTED)
                 prefix = {"ok": "✓ ", "err": "✗ ", "block": "🚫 "}.get(ev["state"], "")
-                refs["result"].configure(text=prefix + ev["result"], text_color=tone)
+                shown = ev.get("summary") or str(ev["result"]).replace("\n", " ")[:80]
+                refs["result"].configure(text=prefix + shown, text_color=tone)
             if ev.get("note"):
                 refs["note"].configure(text=ev["note"])
             if ev.get("img") and not refs.get("img_done"):
@@ -160,6 +163,17 @@ class ChatStream:
                      font=ctk.CTkFont(size=12), text_color=FAINT).pack(
             pady=(8, 2))
 
+    def _thought(self, ev):
+        """思考摘要卡（T24 任务 2）：模型动手前那句「为什么」，灰色小卡，
+        与右侧用户气泡、下方工具卡一眼区分。"""
+        row = ctk.CTkFrame(self.frame, fg_color="transparent")
+        row.pack(fill="x", pady=(2, 2))
+        card = ctk.CTkFrame(row, fg_color=CARD_2, corner_radius=10)
+        card.pack(anchor="w", padx=(8, 60), fill="x", expand=False)
+        ctk.CTkLabel(card, text="💭 " + ev["text"], font=ctk.CTkFont(size=12),
+                     text_color=MUTED, wraplength=440, justify="left",
+                     anchor="w").pack(anchor="w", padx=12, pady=(6, 6))
+
     def _tool(self, ev):
         row = ctk.CTkFrame(self.frame, fg_color="transparent")
         row.pack(fill="x", pady=(4, 2))
@@ -169,7 +183,9 @@ class ChatStream:
 
         head = ctk.CTkFrame(card, fg_color="transparent")
         head.pack(fill="x", padx=12, pady=(8, 0))
-        ctk.CTkLabel(head, text=f"🔧 {tool_display(ev['name'], ev['args'])}",
+        # T24：带步骤号（第 1 步/第 2 步…），小白能数出「做到第几步了」
+        step = f"第 {ev['step']} 步 · " if ev.get("step") else ""
+        ctk.CTkLabel(head, text=f"{step}🔧 {tool_display(ev['name'], ev['args'])}",
                      font=ctk.CTkFont(size=12, weight="bold"),
                      text_color=TOOLC, anchor="w").pack(side="left")
         chip_text, chip_color = TOOL_CHIP[ev["state"]]
@@ -177,11 +193,8 @@ class ChatStream:
                             text_color=chip_color)
         chip.pack(side="right")
 
-        args_lbl = ctk.CTkLabel(
-            card, text="参数：" + json.dumps(ev.get("args", {}), ensure_ascii=False)[:140],
-            font=ctk.CTkFont(family="Consolas", size=12), text_color=FAINT,
-            wraplength=440, justify="left", anchor="w")
-        args_lbl.pack(fill="x", padx=12, pady=(2, 0))
+        # T24：不再显示「参数：{json}」——技术细节移到运行日志区；标题里的
+        # tool_display 已带关键参数（打开应用 notepad / 点击 (x, y)…）
 
         result_lbl = ctk.CTkLabel(card, text="", font=ctk.CTkFont(size=13),
                                   wraplength=440, justify="left", anchor="w")
@@ -198,6 +211,13 @@ class ChatStream:
         if ev.get("img"):
             refs["img_done"] = True
             self._attach_image(card, ev)
+        # 切 Tab 回来 render_all 重建卡片时，已终态的卡要立即带出结果行
+        #（原先只靠 refresh 填，重建后结果行空白）
+        if ev.get("result"):
+            tone = {"ok": OK, "err": ERR, "block": WARN}.get(ev["state"], MUTED)
+            prefix = {"ok": "✓ ", "err": "✗ ", "block": "🚫 "}.get(ev["state"], "")
+            shown = ev.get("summary") or str(ev["result"]).replace("\n", " ")[:80]
+            result_lbl.configure(text=prefix + shown, text_color=tone)
         ctk.CTkLabel(card, text="").pack(pady=(0, 4))
 
     def _attach_image(self, card, ev):

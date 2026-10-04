@@ -73,6 +73,40 @@ def tool_display(name: str, args) -> str:
     return f"{cn} {detail}".strip()
 
 
+# 工具成功 → 一句人话（T24 过程卡片的结果摘要）。不在表里的工具回落「已完成」，
+# 与 TOOL_CHIP 的状态章（✓ 完成）互补：章说状态，这行说干了什么
+_RESULT_VERBS = {
+    "open_app": "已打开", "open_url": "已打开", "close_app": "已关闭",
+    "click": "已点击", "click_ui_element": "已点击", "type_text": "已输入",
+    "press_key": "已按键", "hotkey": "已按快捷键", "scroll": "已滚动",
+    "screenshot": "已截图保存", "analyze_screen": "已看清屏幕内容",
+    "list_windows": "已列出窗口", "focus_window": "已切到目标窗口",
+    "list_ui_elements": "已列出控件", "clipboard_read": "已读取剪贴板",
+    "clipboard_write": "已写入剪贴板", "wait": "已等待",
+    "send_feishu_message": "已发送", "verify_message_sent": "已核对发送结果",
+    "create_folder": "文件夹已备好", "locate_on_screen": "已查找",
+    "move_to": "已移动鼠标", "install_skill": "技能包已装好",
+    "get_mouse_position": "已获取", "get_screen_size": "已获取",
+}
+
+
+def result_summary(name: str, text: str, ok: bool) -> str:
+    """工具结果 → 一句大白话（T24 任务 2 的「结果摘要」）。
+
+    成功给动词短语（如 open_app → 已打开）；失败把引擎的中文报错
+    剥掉「错误: 」前缀取前 80 字（原文本就说人话，翻译表反而丢信息）。
+    技术全文不丢：运行日志区始终有完整一行。
+    """
+    if not ok:
+        reason = str(text).strip()
+        for pfx in ("错误:", "错误："):
+            if reason.startswith(pfx):
+                reason = reason[len(pfx):].strip()
+                break
+        return ("没成功：" + reason[:80]) if reason else "没成功"
+    return _RESULT_VERBS.get(name, "已完成")
+
+
 def humanize_error(error_msg: str) -> str:
     error_translations = {
         "PermissionError": "无法操作，可能需要管理员权限",

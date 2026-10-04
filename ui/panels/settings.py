@@ -21,7 +21,7 @@ except ImportError:
 
 from ui.theme import (ACCENT, ACCENT_HOVER, BG, BORDER, CARD, CARD_2,
                       DEFAULT_MAX_CONCURRENT, ERR, FAINT, INPUT_BG, MODEL_NAME,
-                      MUTED, OK, OLLAMA_URL, TEXT, WARN)
+                      MUTED, OK, OLLAMA_URL, TEXT, WARN, MSG_RESHOW_WELCOME)
 from ui.formatters import _effective_max_turns
 from ui.chat_stream import attach_modal_dialog
 
@@ -242,6 +242,16 @@ class SettingsMixin:
         ctk.CTkSwitch(body, text="关闭窗口时最小化到系统托盘", variable=tray_var,
                       progress_color=ACCENT, text_color=TEXT,
                       font=ctk.CTkFont(size=12)).pack(anchor="w", pady=(14, 0))
+
+        # 「重新显示引导」（T24 任务 1 第 4 点）：第一次用没看懂，随时回来看。
+        # 先关设置窗再弹卡——两张模态卡叠着会互抢焦点（attach_modal_dialog
+        # 禁用的都是主窗口，设置窗不会自己让位）
+        ctk.CTkButton(body, text=MSG_RESHOW_WELCOME, height=32, corner_radius=8,
+                      fg_color="transparent", border_width=1, border_color=BORDER,
+                      text_color=MUTED, hover_color=CARD_2,
+                      font=ctk.CTkFont(size=12), anchor="w",
+                      command=lambda: (dlg.destroy(), self._show_welcome())
+                      ).pack(anchor="w", pady=(10, 0))
 
         # ---- 飞书群通知 ----
         feishu_var = ctk.StringVar(value=self.settings.get("feishu_webhook", ""))

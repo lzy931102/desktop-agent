@@ -1388,6 +1388,15 @@ SYSTEM_PROMPT = """你是一个电脑操作助手，通过工具帮用户完成�
 3. analyze_screen 的返回内容就是唯一依据，不要往里加自己的想象；
    它没看清楚的，就直说"没看清楚"，不要编一个像样的答案
 
+【说话规则（你的话会直接显示给用户看，重要）】
+每次调用工具前，先用一句话说明"为什么这么做"，格式：
+💭 <一句话原因>
+例如：💭 任务需要记事本，先打开它
+这句话会被单独显示给用户，所以：
+- 用自然的大白话，不出现工具名和技术术语
+- 一句话，不要啰嗦；说"为什么"，不说"怎么做"
+- 关键结论和结果不要只写在这句里，最后要正常向用户汇报
+
 收到用户指令后，规划步骤并调用工具。每步完成后简要汇报。任务完成后，用一句明确的话告诉用户结果；没把握的事不要说"完成"。"""
 
 
@@ -1442,6 +1451,7 @@ class DesktopAgent:
         self.on_tool_result = None    # 回调：工具调用后
         self.on_log = None            # 回调：通用日志
         self.on_retry = None          # 回调：工具重试中（attempt, max_retries）
+        self.on_thought = None        # 回调：思考摘要（T24：每轮动手前的一句人话，给对话流卡片）
         self.current_turn = 0         # 当前轮次（供界面显示）
         self.total_tokens = 0         # 本次任务累计 token（prompt+completion，供界面显示）
 
@@ -1710,6 +1720,15 @@ class DesktopAgent:
                 # T8：空回复显式打标（只靠返回文本匹配会漏——见 run() 定态处）
                 self._empty_reply = True
                 return "模型未返回有效内容，请重试或换一种说法描述任务。"
+
+            # T24 过程可视化：本轮要动手了，把模型的正文（💭 一句为什么）发给
+            # 对话流当「思考摘要」。 SYSTEM_PROMPT 要求工具轮正文就是这一句；
+            # 模型没写（空正文）就没有摘要事件，不硬凑、不刷屏。
+            # 剥 think 后只做显示（history 里保留原文），截断防长篇大论。
+            if self.on_thought:
+                _thought = strip_think(resp.get("content", "") or "").strip()
+                if _thought:
+                    self.on_thought(_thought[:200])
 
             for tc in tool_calls:
                 if self._stop_requested:

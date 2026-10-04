@@ -66,10 +66,12 @@ from ui.theme import (APP_VERSION, OLLAMA_URL, MODEL_NAME,
                       EXAMPLES, WELCOME_HEAD, MSG_ON_IT, MSG_QUEUED,
                       MSG_DONE_OK, MSG_DONE_FAIL, MSG_STOPPED,
                       MSG_NEED_INPUT, MSG_APPROVED, MSG_DENIED,
-                      MSG_BLOCKED_SUB, MSG_CONFIRM_HEAD)
+                      MSG_BLOCKED_SUB, MSG_CONFIRM_HEAD, MSG_INPUT_HINT,
+                      WELCOME_CARD_HEAD, WELCOME_CARD_LINES,
+                      WELCOME_CARD_BUTTON, MSG_RESHOW_WELCOME)
 from ui.formatters import (short_title, rel_time, fmt_tokens,
                             tool_display, humanize_error, parse_log,
-                            _effective_max_turns)
+                            result_summary, _effective_max_turns)
 from ui.sessions import TaskSession
 from ui.chat_stream import ChatStream, attach_modal_dialog
 from ui.runners import PhoneTaskRunner, MailTaskRunner
@@ -128,6 +130,8 @@ class AgentGUI(DialogsMixin, SettingsMixin, SchedulerPanelMixin, TasksMixin, Plu
         self.active = None
         self.ollama_ok = None       # None=检测中
         self._onboarding_auto_shown = False  # 本次运行只自动弹一次引导卡
+        self._welcome_open = False          # T24 欢迎卡正在显示（挂起路线卡用）
+        self._pending_onboarding = False    # 欢迎卡关闭后要补弹的模型路线卡
         self._sidebar_dirty = True
         self._tabs_dirty = True
 
@@ -152,6 +156,7 @@ class AgentGUI(DialogsMixin, SettingsMixin, SchedulerPanelMixin, TasksMixin, Plu
         self.new_session()          # 启动即有一个空白任务 Tab
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self.root.after(120, self._pump)
+        self.root.after(600, self._maybe_show_welcome)  # T24：首启「怎么用」卡
         threading.Thread(target=self._check_connection, daemon=True).start()
 
     # ================= 布局 =================
@@ -271,14 +276,17 @@ class AgentGUI(DialogsMixin, SettingsMixin, SchedulerPanelMixin, TasksMixin, Plu
                                    command=lambda: self.logbox.tag_add("sel", "1.0", "end"))
         self.logbox.bind("<Button-3>", self._show_log_menu)
 
-        # ---- 输入区 ----
+        # ---- 输入区（T24 任务 3：加大占主位，上方一行小字指明「在哪输入」） ----
         self._add_chip_rows(main, EXAMPLES)
 
+        ctk.CTkLabel(main, text=MSG_INPUT_HINT, font=ctk.CTkFont(size=12),
+                     text_color=FAINT, anchor="w").pack(fill="x", pady=(8, 2))
+
         row = ctk.CTkFrame(main, fg_color="transparent")
-        row.pack(fill="x", pady=(6, 0))
+        row.pack(fill="x", pady=(2, 0))
         self.input_text = ctk.CTkTextbox(
-            row, height=56, font=ctk.CTkFont(size=13), corner_radius=10,
-            fg_color=INPUT_BG, border_width=1, border_color=BORDER, wrap="word",
+            row, height=72, font=ctk.CTkFont(size=14), corner_radius=10,
+            fg_color=INPUT_BG, border_width=2, border_color=BORDER, wrap="word",
             text_color=TEXT)
         self.input_text.pack(side="left", fill="both", expand=True)
         self.input_text.tag_config("ph", foreground=FAINT)
@@ -289,7 +297,7 @@ class AgentGUI(DialogsMixin, SettingsMixin, SchedulerPanelMixin, TasksMixin, Plu
                              lambda e: (self._start_or_stop(), "break")[1])
 
         self.start_button = ctk.CTkButton(
-            row, text="▶ 开始执行", width=120, height=56, corner_radius=10,
+            row, text="▶ 开始执行", width=132, height=72, corner_radius=10,
             font=ctk.CTkFont(size=14, weight="bold"),
             fg_color=ACCENT, hover_color=ACCENT_HOVER, command=self._start_or_stop)
         self.start_button.pack(side="right", padx=(10, 0))
@@ -573,10 +581,23 @@ class AgentGUI(DialogsMixin, SettingsMixin, SchedulerPanelMixin, TasksMixin, Plu
     def _apply(self, s, kind, payload):
         if kind == "log":
             self._apply_log(s, payload)
+        elif kind == "thought":
+            # T24 过程卡片：模型每轮动手前那句「为什么」。剥 💭 前缀截短，
+            # 一次一条，跟在轮次线后、工具卡前
+            text = str(payload).strip()
+            if text.startswith("💭"):
+                text = text[1:].strip()
+            text = text[:120]
+            if text:
+                ev = s.add("thought", text=text)
+                s.current_action = "💭 " + text[:40]
+                if self.active is s:
+                    self.chat.append(ev)
         elif kind == "tool_call":
             name, args = payload
+            step = sum(1 for e in s.events if e.get("kind") == "tool") + 1
             ev = s.add("tool", name=name, args=args, state="run",
-                       result="", note="", img=None)
+                       result="", note="", img=None, step=step)
             s.current_action = f"🔧 正在执行工具：{tool_display(name, args)}"
             self._log_line(s, f"▶ 调用工具 {name}，参数 "
                            + json.dumps(args, ensure_ascii=False)[:120])
@@ -652,7 +673,8 @@ class AgentGUI(DialogsMixin, SettingsMixin, SchedulerPanelMixin, TasksMixin, Plu
         self._log_line(s, ("✓ " if ok else "✗ ") + f"{name} 完成，结果："
                        + text.replace("\n", " ")[:150])
         if ev:
-            ev.update(state="ok" if ok else "err", result=text)
+            ev.update(state="ok" if ok else "err", result=text,
+                      summary=result_summary(name, text, ok))
             if name == "screenshot" and ok:
                 ev["img"] = self._screenshot_path(args)
             if self.active is s:
@@ -1046,11 +1068,16 @@ class AgentGUI(DialogsMixin, SettingsMixin, SchedulerPanelMixin, TasksMixin, Plu
         self.ollama_ok = ok
         self.conn_label.configure(text=text, text_color=OK if ok else ERR)
         # 首启引导：只在启动首检就失败时按状态机自动弹一次；会话中途的
-        # 瞬时失败不弹模态卡（徽章随时可手动唤出）
+        # 瞬时失败不弹模态卡（徽章随时可手动唤出）。
+        # T24：欢迎卡显示中时不叠弹——先记账，欢迎卡关闭时补弹，两张卡
+        # 首次启动撞在同一秒（模态互踩、标题栏抢焦点）是 2026-10-04 沙箱实测
         if ok is False and first_check and not self._onboarding_auto_shown:
             self._onboarding_auto_shown = True
             if should_show_onboarding(self.settings, ok):
-                self.root.after(400, self._show_onboarding, True)
+                if self._welcome_open:
+                    self._pending_onboarding = True
+                else:
+                    self.root.after(400, self._show_onboarding, True)
 
     # ================= 定时任务 =================
     def _on_scheduled_task(self, sched_task: dict):
