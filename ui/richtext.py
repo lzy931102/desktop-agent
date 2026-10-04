@@ -10,7 +10,7 @@ import webbrowser
 
 from core.settings import validate_public_url
 from ui.formatters import tokenize_rich
-from ui.theme import KEYC, LINK, PATHC
+from ui.theme import (KEYC, LINK, LINK_ON_ACCENT, PATHC, PATH_ON_ACCENT)
 
 
 def open_target(kind, value):
@@ -56,16 +56,23 @@ def _handle_click(widget, kind, x, y):
         pass
 
 
-def setup_rich_tags(widget):
-    """在 tk.Text / CTkTextbox 上配好三个高亮 tag：颜色、点击、悬停手型。
+def setup_rich_tags(widget, inverted=False):
+    """在 tk.Text / CTkTextbox 上配好高亮 tag：颜色、点击、悬停手型。
 
+    inverted=True 为「反色模式」（T24e 扩展）：用于 BUBBLE_USER 亮蓝底的
+    用户气泡——默认链接蓝与底色同色不可读，网址改亮黄、路径改亮绿
+    （任务书点名色值），快捷键不配 tag（用户输入里不高亮，保持白字）。
     tag 名即类型（url/path/key），按 tag 绑定对全文生效——先 setup 后续
-    insert_rich 打上的段自动可点。悬停变 hand2、移出恢复原光标
-    （Text 默认 xterm 选字光标 / 气泡 arrow）。返回 widget 便于链式使用。
+    insert_rich 打上的段自动可点。悬停变 hand2、移出恢复原光标。
+    返回 widget 便于链式使用。
     """
-    widget.tag_config("url", foreground=LINK, underline=True)
-    widget.tag_config("path", foreground=PATHC, underline=True)
-    widget.tag_config("key", foreground=KEYC)
+    widget.tag_config("url", foreground=LINK_ON_ACCENT if inverted else LINK,
+                      underline=True)
+    widget.tag_config("path",
+                      foreground=PATH_ON_ACCENT if inverted else PATHC,
+                      underline=True)
+    if not inverted:
+        widget.tag_config("key", foreground=KEYC)
     for kind in ("url", "path"):
         widget.tag_bind(kind, "<Button-1>",
                         lambda e, w=widget, k=kind: _handle_click(w, k, e.x, e.y))
@@ -79,10 +86,12 @@ def setup_rich_tags(widget):
 
 def insert_rich(widget, text):
     """按 tokenize_rich 的分词插入文本：网址/路径/快捷键段带对应 tag
-    （高亮 + 可点），普通段原样。state=disabled 的控件同样适用
-    （日志区常态禁用，tag 与点击不受禁用影响）。"""
+    （高亮 + 可点），普通段原样。只打 setup_rich_tags 配过的 tag
+    （如反色模式没配 key，key 段就保持基础色）；state=disabled 的控件
+    同样适用（日志区常态禁用，tag 与点击不受禁用影响）。"""
+    configured = set(widget.tag_names())
     for seg, kind in tokenize_rich(text):
-        if kind == "text":
+        if kind == "text" or kind not in configured:
             widget.insert("end", seg)
         else:
             widget.insert("end", seg, kind)

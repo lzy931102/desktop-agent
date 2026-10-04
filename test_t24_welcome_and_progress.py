@@ -55,6 +55,9 @@ class FakeLogbox:
     def configure(self, **kw):
         pass
 
+    def tag_names(self):
+        return ()   # T24e：_log_line 走 richtext.insert_rich，先查已配置 tag
+
     def insert(self, *_a):
         pass
 
@@ -314,13 +317,18 @@ def tk_env(ctk_root):
 
 
 def _all_text(container):
-    """递归收集容器里所有带 text 选项控件的文本（不依赖 CTk 内部类名）"""
+    """递归收集容器里所有带 text 选项控件的文本（不依赖 CTk 内部类名）；
+    T24e 扩展起工具卡结果行是 tk.Text（无 text 选项），改读其内容区"""
+    import tkinter as tkbase
     texts = []
     for w in container.winfo_children():
-        try:
-            texts.append(str(w.cget("text")))
-        except Exception:
-            pass   # frame 类控件没有 text，跳过继续下钻
+        if isinstance(w, tkbase.Text):
+            texts.append(w.get("1.0", "end").rstrip("\n"))
+        else:
+            try:
+                texts.append(str(w.cget("text")))
+            except Exception:
+                pass   # frame 类控件没有 text，跳过继续下钻
         texts.extend(_all_text(w))
     return texts
 

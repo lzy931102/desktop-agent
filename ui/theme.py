@@ -52,6 +52,11 @@ LINK = ACCENT_BLUE        # 网址（可点击，下划线）
 PATHC = ACCENT_GREEN      # 文件路径（可点击定位）
 KEYC = ACCENT_YELLOW      # 命令 / 快捷键
 
+# 用户气泡反色高亮（T24e 扩展）：BUBBLE_USER 亮蓝底上，默认的链接蓝
+# 与底色同色不可读，改用任务书点名的反色；普通文字仍白色
+LINK_ON_ACCENT = "#FBBF24"   # 网址（蓝底亮黄，可点击，下划线）
+PATH_ON_ACCENT = "#4ADE80"   # 路径（蓝底亮绿，可点击定位）
+
 STATUS_COLOR = {"draft": FAINT, "queued": FAINT, "running": RUNBLUE,
                 "done": OK, "failed": ERR, "stopped": WARN}
 STATUS_ICON = {"draft": "○", "queued": "⏸", "running": "⏳",

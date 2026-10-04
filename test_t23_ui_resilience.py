@@ -263,7 +263,8 @@ def test_no_undefined_names_in_ui_modules():
 # ==================== 5. _apply_log 轮次渲染（T4 拆分残留回归） ====================
 
 class _FakeLogbox:
-    """记录 _log_line 写入的行，模拟滚动日志区"""
+    """记录 _log_line 写入的行，模拟滚动日志区（T24e 起 _log_line 走
+    richtext.insert_rich，须提供 tag_names 接口——无 tag 即全按普通文本）"""
 
     def __init__(self):
         self.lines = []
@@ -271,7 +272,10 @@ class _FakeLogbox:
     def configure(self, **kw):
         pass
 
-    def insert(self, pos, text):
+    def tag_names(self):
+        return ()
+
+    def insert(self, pos, text, tags=None):
         self.lines.append(text)
 
     def see(self, pos):

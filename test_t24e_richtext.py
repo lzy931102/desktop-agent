@@ -25,8 +25,8 @@ import threading
 
 import pytest
 
-from ui import richtext
-from ui.theme import KEYC, LINK, PATHC
+from ui import chat_stream, richtext
+from ui.theme import (KEYC, LINK, LINK_ON_ACCENT, PATHC, PATH_ON_ACCENT)
 
 
 def _bind_cmd(native, tag, seq):
@@ -188,3 +188,83 @@ def test_chat_stream_delegates_to_richtext():
     assert "richtext.insert_rich" in src
     assert "tag_config" not in src           # 本地私配 tag = 复制粘贴，禁止
     assert not hasattr(chat_stream, "_open_target_work")   # 已迁居 richtext
+
+
+# ==================== 5. T24e 扩展：工具卡结果行 + 用户气泡反色 ====================
+
+def test_theme_inverted_constants():
+    """任务书点名的反色值一字不差（亮蓝底上的网址/路径）"""
+    from ui.theme import LINK_ON_ACCENT, PATH_ON_ACCENT
+    assert LINK_ON_ACCENT == "#FBBF24"
+    assert PATH_ON_ACCENT == "#4ADE80"
+
+
+def test_inverted_scheme_colors_and_no_key(tk_env):
+    """反色模式：网址亮黄/路径亮绿；key 不配 tag（用户输入不高亮快捷键）"""
+    ctk, root = tk_env
+    box = ctk.CTkTextbox(root, width=400, height=80)
+    richtext.setup_rich_tags(box, inverted=True)
+    assert box.tag_cget("url", "foreground") == LINK_ON_ACCENT
+    assert box.tag_cget("path", "foreground") == PATH_ON_ACCENT
+    assert "key" not in box.tag_names()
+    richtext.insert_rich(box, "打开 https://example.com 存到 F:\\笔记.txt 按Ctrl+C")
+    assert _tag_text(box, "url") == ["https://example.com"]
+    assert _tag_text(box, "path") == ["F:\\笔记.txt"]
+    assert not _tag_text(box, "key")         # 未配置的 kind 保持基础色
+
+
+def _find_texts(widget):
+    import tkinter as tkbase
+    stack = list(widget.winfo_children())
+    out = []
+    while stack:
+        w = stack.pop()
+        stack.extend(w.winfo_children())
+        if isinstance(w, tkbase.Text):
+            out.append(w)
+    return out
+
+
+def test_user_bubble_inverted_end_to_end(tk_env):
+    """用户气泡：蓝底白字，网址/路径反色高亮可点（真 ChatStream 渲染）"""
+    from ui.theme import BUBBLE_USER
+    ctk, root = tk_env
+    app = type("A", (), {"root": root, "settings": {}})
+    cs = chat_stream.ChatStream(root, app)
+    cs.append({"kind": "user",
+               "text": "打开 https://example.com 对比 F:\\笔记.txt"}, scroll=False)
+    bodies = _find_texts(cs.frame)
+    assert bodies, "用户气泡应有富文本正文"
+    body = bodies[0]
+    assert str(body.cget("bg")) == BUBBLE_USER
+    assert str(body.cget("fg")) == "#FFFFFF"
+    assert body.tag_cget("url", "foreground") == LINK_ON_ACCENT
+    assert body.tag_cget("path", "foreground") == PATH_ON_ACCENT
+    assert _tag_text(body, "url") == ["https://example.com"]
+    assert _tag_text(body, "path") == ["F:\\笔记.txt"]
+    assert not _tag_text(body, "key")
+
+
+def test_tool_result_line_rich_and_tone(tk_env):
+    """工具卡结果行：摘要里的网址/路径高亮，基础色随状态（✓绿/✗红）；
+    异步 refresh 走同一写入点，重打 tag 不残留"""
+    from ui.theme import ERR, OK
+    ctk, root = tk_env
+    app = type("A", (), {"root": root, "settings": {}})
+    cs = chat_stream.ChatStream(root, app)
+    ev = {"kind": "tool", "name": "screenshot", "args": {}, "state": "ok",
+          "step": 1, "result": "已保存到 F:\\截图\\a.png",
+          "summary": "已保存到 F:\\截图\\a.png"}
+    cs.append(ev, scroll=False)
+    bodies = [b for b in _find_texts(cs.frame) if b.tag_ranges("path")]
+    assert bodies, "结果行应有路径 tag"
+    body = bodies[-1]
+    assert str(body.cget("fg")) == OK
+    assert _tag_text(body, "path") == ["F:\\截图\\a.png"]
+    # 异步刷新：换成含网址的失败摘要，基础色变红、tag 重打、旧段不残留
+    ev.update(state="err", result="错误: 无法访问 https://broken.example.com",
+              summary="没成功：无法访问 https://broken.example.com")
+    cs.refresh(ev)
+    assert str(body.cget("fg")) == ERR
+    assert _tag_text(body, "url") == ["https://broken.example.com"]
+    assert not body.tag_ranges("path"), "旧路径段应随重写清掉"

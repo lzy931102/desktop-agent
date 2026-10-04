@@ -42,20 +42,52 @@ def _auto_lines(text_widget):
                     for para in text.split("\n"))
         return max(1, lines)
 
-def _make_rich_text(parent, text, scale=1.0):
-    """助手气泡的富文本正文（T24 任务 3）：原生 tk.Text。
+def _ui_scale(app):
+    """全局缩放（CTk ScalingTracker）；取不到回落 1.0。
+    原生 tk.Text 不吃 CTkFont 自动缩放，字号要自己乘。"""
+    try:
+        from customtkinter import ScalingTracker
+        return ScalingTracker.get_widget_scaling(app.root) or 1.0
+    except Exception:
+        return 1.0
+
+
+def _bubble_cells(text, cap=60):
+    """用户气泡按内容估宽：tk.Text 宽度单位≈「0」字宽（CJK 约占 2 格），
+    短消息保持紧凑右对齐，超宽按 cap（≈旧 wraplength 440px）折行。"""
+    lines = str(text).split("\n") or [""]
+    cells = max(sum(2 if ord(c) > 127 else 1 for c in ln) for ln in lines)
+    return max(8, min(cap, cells + 1))
+
+
+def _fill_result(widget, text, tone):
+    """工具卡结果行统一写入点：基础色随状态章（✓ 绿 / ✗ 红 / 🚫 黄），
+    摘要里的网址/路径段照常高亮可点（tag 覆盖基础色）。重建与异步刷新
+    两条路都走这里，保证同一形态。"""
+    widget.configure(state="normal", fg=tone)
+    widget.delete("1.0", "end")
+    richtext.insert_rich(widget, text)
+    widget.configure(state="disabled")
+
+
+def _make_rich_text(parent, text, scale=1.0, bg=CARD, fg=TEXT,
+                    size=_ASSISTANT_FONT[1], inverted=False, width=40,
+                    height=3):
+    """富文本正文（T24 任务 3 / T24e 扩展）：原生 tk.Text，三处共用——
+    助手气泡（默认 CARD 底）、工具卡结果行（CARD_2 底，fg 随状态着色）、
+    用户气泡（BUBBLE_USER 亮蓝底 + inverted 反色高亮）。
 
     不用 CTkTextbox：它的像素↔字符宽度换算在 CTkFont/DPI 下系统性失准
     （2026-10-04 实测布局前内部 width=1、布局后文本超宽被裁）。原生 Text
     wrap 按真实像素折行，width 字符数只影响请求宽度（fill="x" 后不生效）。
-    网址亮蓝可点开浏览器、路径亮绿可点定位、快捷键亮黄；tag 配置与点击
-    统一走 ui/richtext（T24e 起与运行日志区共用一套，不许各自实现）。
+    tag 配置与点击统一走 ui/richtext（对话流三处与运行日志区共用一套，
+    不许各自实现）。
     """
     body = tk.Text(parent, wrap="word", relief="flat", bd=0,
-                   highlightthickness=0, bg=CARD, fg=TEXT,
-                   font=( _ASSISTANT_FONT[0], -int(_ASSISTANT_FONT[1] * scale)),
-                   width=40, height=3, padx=0, pady=0, cursor="arrow")
-    richtext.setup_rich_tags(body)
+                   highlightthickness=0, bg=bg, fg=fg,
+                   font=(_ASSISTANT_FONT[0], -int(size * scale)),
+                   width=width, height=height, padx=0, pady=0, cursor="arrow")
+    richtext.setup_rich_tags(body, inverted=inverted)
     richtext.insert_rich(body, text)
     body.configure(state="disabled")
     return body
@@ -146,7 +178,7 @@ class ChatStream:
                 tone = {"ok": OK, "err": ERR, "block": WARN}.get(ev["state"], MUTED)
                 prefix = {"ok": "✓ ", "err": "✗ ", "block": "🚫 "}.get(ev["state"], "")
                 shown = ev.get("summary") or str(ev["result"]).replace("\n", " ")[:80]
-                refs["result"].configure(text=prefix + shown, text_color=tone)
+                _fill_result(refs["result"], prefix + shown, tone)
             if ev.get("note"):
                 refs["note"].configure(text=ev["note"])
             if ev.get("img") and not refs.get("img_done"):
@@ -166,9 +198,17 @@ class ChatStream:
         row.pack(fill="x", pady=(8, 2))
         bubble = ctk.CTkFrame(row, fg_color=BUBBLE_USER, corner_radius=12)
         bubble.pack(anchor="e", padx=(90, 8))
-        ctk.CTkLabel(bubble, text=ev["text"], font=ctk.CTkFont(size=13),
-                     text_color="#FFFFFF", wraplength=440, justify="left").pack(
-            padx=14, pady=8)
+        # T24e 扩展：用户输入里的网址/路径反色高亮可点（亮蓝底上默认
+        # 链接蓝不可读 → 亮黄/亮绿，色值见 theme）；普通文字仍白。
+        # 原生 tk.Text 见 _make_rich_text；宽度按内容估，短消息不摊大饼
+        body = _make_rich_text(bubble, ev["text"], scale=_ui_scale(self.app),
+                               bg=BUBBLE_USER, fg="#FFFFFF", size=13,
+                               inverted=True, width=_bubble_cells(ev["text"]),
+                               height=1)
+        body.pack(fill="x", padx=14, pady=8)
+        for delay in (0, 60, 160):
+            body.after(delay,
+                       lambda b=body: b.configure(height=_auto_lines(b)))
 
     def _assistant(self, ev):
         row = ctk.CTkFrame(self.frame, fg_color="transparent")
@@ -179,13 +219,7 @@ class ChatStream:
         bubble.pack(anchor="w", padx=(8, 90), fill="x")
         # T24 任务 3：网址/路径/快捷键富文本高亮（网址与路径可点）。
         # 原生 tk.Text 见 _make_rich_text 的理由；字号随全局缩放
-        scale = 1.0
-        try:
-            from customtkinter import ScalingTracker
-            scale = ScalingTracker.get_widget_scaling(self.app.root) or 1.0
-        except Exception:
-            pass
-        body = _make_rich_text(bubble, ev["text"], scale=scale)
+        body = _make_rich_text(bubble, ev["text"], scale=_ui_scale(self.app))
         body.pack(fill="x", padx=14, pady=(8, 0))
         # 行数自适应等几何稳定后再量（布局前量全错），分三次兜底；
         # tk.Text 的 height 单位是「行」
@@ -253,8 +287,10 @@ class ChatStream:
         # T24：不再显示「参数：{json}」——技术细节移到运行日志区；标题里的
         # tool_display 已带关键参数（打开应用 notepad / 点击 (x, y)…）
 
-        result_lbl = ctk.CTkLabel(card, text="", font=ctk.CTkFont(size=13),
-                                  wraplength=440, justify="left", anchor="w")
+        # T24e 扩展：结果行改富文本——失败摘要（「没成功：…」）里的
+        # 网址/路径高亮可点；基础色随状态在 _fill_result 时上
+        result_lbl = _make_rich_text(card, "", scale=_ui_scale(self.app),
+                                     bg=CARD_2, fg=MUTED, size=13, height=1)
         result_lbl.pack(fill="x", padx=12, pady=(2, 0))
 
         note_lbl = ctk.CTkLabel(card, text=ev.get("note", ""),
@@ -274,7 +310,7 @@ class ChatStream:
             tone = {"ok": OK, "err": ERR, "block": WARN}.get(ev["state"], MUTED)
             prefix = {"ok": "✓ ", "err": "✗ ", "block": "🚫 "}.get(ev["state"], "")
             shown = ev.get("summary") or str(ev["result"]).replace("\n", " ")[:80]
-            result_lbl.configure(text=prefix + shown, text_color=tone)
+            _fill_result(result_lbl, prefix + shown, tone)
         ctk.CTkLabel(card, text="").pack(pady=(0, 4))
 
     def _attach_image(self, card, ev):
