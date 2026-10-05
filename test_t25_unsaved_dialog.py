@@ -382,3 +382,65 @@ def test_schema_has_unsaved_param():
     props = schema["function"]["parameters"]["properties"]
     assert "unsaved" in props
     assert set(props["unsaved"]["enum"]) == {"save", "discard", "cancel"}
+
+
+# ==================== 5. T33 数据安全闸：带 * 的记事本不自动关闭 ====================
+# 背景（2026-10-05 audit 铁证）：18:48:28/50 两次 close_app discard 显式点
+# 「不保存」，把载着用户会话恢复文档的整个窗口销毁。带 * 标题 = 窗口里有
+# 未保存内容（可能是用户的旧文档），任何自动关闭都不做，交用户手动处理。
+
+def test_close_app_refuses_star_notepad_no_wm_close(monkeypatch):
+    """带 * 的记事本：拒绝自动关闭，连 WM_CLOSE 都不发，不算失败结果"""
+    closed = _mock_close_env(monkeypatch, alive=lambda h: True, win32_buttons={})
+    monkeypatch.setattr(agent_loop, "_window_title",
+                        lambda h: "*你好 - Notepad")
+    out = agent_loop.TOOL_FUNCTIONS["close_app"](
+        {"app_name": "notepad", "unsaved": "discard",
+         "_agent_opened": [_notepad_entry()]})
+    assert closed == []                          # WM_CLOSE 一次都没发
+    assert "不自动关闭" in out and "手动处理" in out
+    assert not is_failed_result(out)             # 引导模型上报，不进失败重试
+    assert agent_loop._window_alive(HWND)        # 窗口保留
+
+
+def test_close_app_refuses_restored_flag_even_clean_title(monkeypatch):
+    """标题干净但 open 时检出会话恢复（恢复文档在后台标签的盲区）：同样拒绝"""
+    closed = _mock_close_env(monkeypatch, alive=lambda h: True, win32_buttons={})
+    entry = _notepad_entry()
+    entry["restored_session"] = True             # T32 guard 打的标记
+    out = agent_loop.TOOL_FUNCTIONS["close_app"](
+        {"app_name": "notepad", "unsaved": "discard",
+         "_agent_opened": [entry]})
+    assert closed == []
+    assert "不自动关闭" in out
+
+
+def test_close_app_star_notepad_refuses_save_too(monkeypatch):
+    """unsaved=save 同样拒绝：对未保存旧文档点「保存」会弹另存为，也是动用户数据"""
+    calls = {"save": 0, "discard": 0, "cancel": 0}
+    buttons = {k: (lambda k=k: calls.__setitem__(k, 1)) for k in calls}
+    closed = _mock_close_env(monkeypatch, alive=lambda h: True,
+                             dialog_buttons=buttons)
+    monkeypatch.setattr(agent_loop, "_window_title",
+                        lambda h: "*你好 - Notepad")
+    out = agent_loop.TOOL_FUNCTIONS["close_app"](
+        {"app_name": "notepad", "unsaved": "save",
+         "_agent_opened": [_notepad_entry()]})
+    assert closed == [] and calls == {"save": 0, "discard": 0, "cancel": 0}
+    assert "不自动关闭" in out
+
+
+def test_close_app_star_mspaint_still_closes(monkeypatch):
+    """范围对照：带 * 的非记事本（画图）不受此闸约束，照常走关闭流程"""
+    closed = _mock_close_env(monkeypatch, alive=lambda h: h not in closed,
+                             win32_buttons={})
+    monkeypatch.setattr(agent_loop, "_window_title",
+                        lambda h: "*未命名 - 画图")
+    entry = {"type": "app", "name": "mspaint", "reason": "临时工具",
+             "purpose": "画图", "hwnd": HWND,
+             "exe": "mspaint.exe", "opened_at": 0.0}
+    out = agent_loop.TOOL_FUNCTIONS["close_app"](
+        {"app_name": "mspaint", "unsaved": "discard",
+         "_agent_opened": [entry]})
+    assert closed == [HWND]                      # WM_CLOSE 正常发出
+    assert "已关闭" in out                       # 常规关闭路径不受闸影响

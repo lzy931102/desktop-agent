@@ -1057,6 +1057,9 @@ def _notepad_session_guard(entry) -> str:
     if exe != "notepad.exe" or not hwnd:
         return ""
     was_restored = _window_title(hwnd).startswith("*")
+    if was_restored:
+        # T33：供 close_app 数据安全闸识别（该窗口载着会话恢复的未保存内容）
+        entry["restored_session"] = True
     try:
         import ctypes
         from ctypes import wintypes
@@ -1627,6 +1630,16 @@ def _close_app(args, record=None):
             w.lower() in title.lower() for w in hints):
         return ("错误: 找不到窗口——记录的 " + str(entry.get("name"))
                 + " 窗口已被其他窗口取代，为避免误关不执行，请如实告知用户")
+    # T33 数据安全闸：带 * 的记事本 = 窗口里载着会话恢复的未保存内容
+    # （可能是用户的旧文档；T32 之后 Agent 输入用的也是新建标签，标题
+    # 同样带 *）。任何自动关闭都可能把它带走（2026-10-05 audit 铁证：
+    # 18:48 两次显式「不保存」后内容销毁）——拒绝自动关闭，保留窗口
+    # 交用户手动处理。restored_session 标记兜住「恢复文档在后台标签、
+    # 活动标签标题干净」的盲区
+    if (exe == "notepad.exe"
+            and (title.startswith("*") or entry.get("restored_session"))):
+        return ("记事本有未保存内容，我不自动关闭（不支持自动关闭含未保存"
+                "内容的记事本窗口）——请你手动处理，并在汇报里如实告知用户")
     # T25 防空转：该窗口此前已 2 次没关掉，永久放弃（连 WM_CLOSE 都不发）
     fails_before = int(entry.get("close_fails", 0))
     if fails_before >= 2:
