@@ -81,6 +81,14 @@ class LLMConfig:
     read_timeout: int = 300
 
 
+class LLMStopped(Exception):
+    """用户点了停止：LLM 调用立即中断（T26）。
+
+    继承 Exception——FallbackLLMClient.chat 必须先拦它再拦其他异常，
+    防止「停止」被误当成「本地故障」触发云端 fallback 继续跑。
+    """
+
+
 class LLMClient:
     def __init__(self, config: LLMConfig):
         self.config = config
@@ -88,6 +96,13 @@ class LLMClient:
         # 可选进度回调：流式推理时把「首字耗时/已生成字数」报给界面，
         # 避免 CPU 推理期间界面长时间无反馈被误认为卡死
         self.on_progress = None
+        # T26 停止检查点：callable，返回 True = 用户已请求停止。
+        # 流式循环逐 chunk 调用，命中即抛 LLMStopped——点停止立即中断，
+        # 不再等整轮返回（原实现云端非流式阻塞，实测点停止后 27 秒才停）
+        self.stop_check = None
+        # T26 云端深度思考开关："enabled"/"disabled"；None = 不传参数。
+        # GLM 系列桌面任务关思考的理由见 _chat_openai_compatible 注释
+        self.thinking = None
 
     def _note(self, msg: str):
         """把推理进度报给界面（未设置回调时静默）"""
@@ -96,6 +111,20 @@ class LLMClient:
                 self.on_progress(msg)
             except Exception:
                 pass
+
+    def _check_stop(self):
+        """stop_check 命中 → 抛 LLMStopped。回调异常一律吞掉：
+        检查点坏了不能打断正常推理。getattr 兜底：旧测试/旧代码可能
+        绕过 __init__ 手工装配本类，属性不存在视为未挂检查点"""
+        stop_check = getattr(self, "stop_check", None)
+        if stop_check is None:
+            return
+        try:
+            stop = bool(stop_check())
+        except Exception:
+            return
+        if stop:
+            raise LLMStopped()
 
     def _create_client(self):
         if self.config.provider == LLMProvider.OLLAMA:
@@ -129,25 +158,72 @@ class LLMClient:
         if tools:
             kwargs["tools"] = tools
             kwargs["tool_choice"] = "auto"
-        resp = self.client.chat.completions.create(**kwargs)
-        msg = resp.choices[0].message
-        usage = getattr(resp, "usage", None)
+        # T26：GLM 系列的深度思考默认关闭。桌面任务的对错主要靠工具回显
+        # 体系纠错（重试/动作后校验/焦点锚定/close_app 防呆都是为此设计），
+        # 思考的边际收益低，却实测让每轮多花 10~30 秒——2026-10-04
+        # 「看看现在有哪些窗口」47 秒里 37 秒耗在最终汇报轮的思考上。
+        # 仅 ZHIPU 传（OpenAI/DeepSeek 不认这个参数会 400）；设置
+        # cloud.thinking="enabled" 可开回。
+        if getattr(self, "thinking", None) and self.config.provider == LLMProvider.ZHIPU:
+            kwargs["extra_body"] = {"thinking": {"type": self.thinking}}
+        # T26：改流式。原先非流式阻塞到整轮生成完才返回，期间既无法响应
+        # 停止（实测点停止后 27 秒才真停），界面也没有进度。流式逐 chunk
+        # 检查停止请求，点停止立即中断。
+        kwargs["stream"] = True
+        parts: List[str] = []
+        tool_calls: List[Dict] = []
+        usage = {"prompt": 0, "eval": 0}
+        started = time.time()
+        first_chunk_at = None
+        for chunk in self.client.chat.completions.create(**kwargs):
+            self._check_stop()
+            if not getattr(chunk, "choices", None):
+                # OpenAI 流式协议：usage 随空 choices 的收尾块到达
+                u = getattr(chunk, "usage", None)
+                if u:
+                    usage = {"prompt": getattr(u, "prompt_tokens", 0) or 0,
+                             "eval": getattr(u, "completion_tokens", 0) or 0}
+                continue
+            delta = chunk.choices[0].delta
+            piece = getattr(delta, "content", None) or ""
+            if piece:
+                if first_chunk_at is None:
+                    first_chunk_at = time.time()
+                    self._note(f"首字用时 {first_chunk_at - started:.1f} 秒，开始生成…")
+                parts.append(piece)
+            for tc in (getattr(delta, "tool_calls", None) or []):
+                idx = getattr(tc, "index", None)
+                if idx is None:
+                    idx = max(0, len(tool_calls) - 1)
+                while len(tool_calls) <= idx:
+                    tool_calls.append({"id": "", "type": "function",
+                                       "function": {"name": "", "arguments": ""}})
+                slot = tool_calls[idx]
+                if getattr(tc, "id", None):
+                    slot["id"] = tc.id
+                fn = getattr(tc, "function", None)
+                if fn is not None:
+                    # name 一次性到达用覆盖；arguments 分片到达用拼接
+                    if getattr(fn, "name", None):
+                        slot["function"]["name"] = fn.name
+                    if getattr(fn, "arguments", None):
+                        slot["function"]["arguments"] += fn.arguments
+        msg_content = "".join(parts)
         return {
             "role": "assistant",
-            "content": msg.content or "",
+            "content": msg_content,
             "tool_calls": [
                 {
-                    "id": tc.id,
+                    "id": tc["id"],
                     "type": "function",
                     "function": {
-                        "name": tc.function.name,
-                        "arguments": tc.function.arguments
+                        "name": tc["function"]["name"],
+                        "arguments": tc["function"]["arguments"]
                     }
-                } for tc in (msg.tool_calls or [])
+                } for tc in tool_calls if tc["function"]["name"]
             ],
-            # token 用量透传（供界面统计；OpenAI 兼容通道）
-            "_usage": {"prompt": getattr(usage, "prompt_tokens", 0) or 0,
-                       "eval": getattr(usage, "completion_tokens", 0) or 0},
+            # token 用量透传（供界面统计；OpenAI 兼容通道流式收尾块）
+            "_usage": usage,
         }
 
     def ping(self) -> tuple:
@@ -278,6 +354,9 @@ class LLMClient:
         with session.post(url, json=payload, stream=True, timeout=timeout) as r:
             r.raise_for_status()
             for raw in r.iter_lines(decode_unicode=False):
+                # T26：逐块检查停止请求——CPU 推理动辄 1~3 分钟，
+                # 原先要等整段生成完才能停
+                self._check_stop()
                 if not raw:
                     continue
                 try:
@@ -339,9 +418,21 @@ class FallbackLLMClient:
         self.local.on_progress = cb
         self.cloud.on_progress = cb
 
+    @property
+    def stop_check(self):
+        """T26：停止检查点透传，界面/agent 侧设置一次两边都生效"""
+        return self.local.stop_check
+
+    @stop_check.setter
+    def stop_check(self, cb):
+        self.local.stop_check = cb
+        self.cloud.stop_check = cb
+
     def chat(self, messages: List[Dict], tools: List[Dict] = None) -> Dict:
         try:
             return self.local.chat(messages, tools)
+        except LLMStopped:
+            raise  # T26：用户停止不是本地故障，绝不 fallback 到云端继续跑
         except Exception as local_err:
             if self.on_fallback:
                 try:
@@ -350,6 +441,8 @@ class FallbackLLMClient:
                     pass
             try:
                 return self.cloud.chat(messages, tools)
+            except LLMStopped:
+                raise  # 云端跑到一半停止，同样立即中断
             except Exception as cloud_err:
                 raise RuntimeError(
                     f"本地与云端模型均调用失败。本地: {local_err}；云端: {cloud_err}"
@@ -395,6 +488,11 @@ def build_llm_client(settings, on_fallback=None):
         model=cloud_cfg_dict.get("model", ""),
         temperature=0.1,
     ))
+    # T26：GLM 深度思考默认关闭（设置 cloud.thinking="enabled" 可开回），
+    # 只对 ZHIPU 生效（_chat_openai_compatible 里判定 provider）
+    if provider_value == "zhipu":
+        cloud_client.thinking = str(
+            cloud_cfg_dict.get("thinking") or "disabled").lower()
     if mode == "cloud":
         return cloud_client
     return FallbackLLMClient(local_client, cloud_client, on_fallback=on_fallback)
@@ -1813,6 +1911,12 @@ class DesktopAgent:
         """请求停止执行，在下一轮开始前生效"""
         self._stop_requested = True
 
+    def _raise_if_stopped(self):
+        """T26：给 run_with_retry 的 stop_check——请求停止时抛 LLMStopped
+        中断退避睡眠；LLM 流式循环用的是无异常版检查点（_check_stop）"""
+        if self._stop_requested:
+            raise LLMStopped()
+
     def _execute_tool(self, name: str, args: dict, risk: str):
         """执行单个工具：重试（指数退避）+ 动作后校验，全部事件入审计"""
         # 技能包安装（技能系统可用时注册；先于插件，避免被同名插件遮蔽）
@@ -1893,12 +1997,14 @@ class DesktopAgent:
             result, attempts, final_ok = run_with_retry(
                 _critical_click, name, retryable,
                 auditor=self.auditor,
-                on_retry=lambda attempt, mx, wait: self._on_retry(name, attempt, mx))
+                on_retry=lambda attempt, mx, wait: self._on_retry(name, attempt, mx),
+                stop_check=self._raise_if_stopped)
         else:
             result, attempts, final_ok = run_with_retry(
                 lambda: TOOL_FUNCTIONS[name](args), name, retryable,
                 auditor=self.auditor,
-                on_retry=lambda attempt, mx, wait: self._on_retry(name, attempt, mx))
+                on_retry=lambda attempt, mx, wait: self._on_retry(name, attempt, mx),
+                stop_check=self._raise_if_stopped)
 
         # 动作后校验（仅首次即成功的关键动作；重试路径已含在失败判定里）。
         # 关键点击已在重试环内强校验过，这里跳过避免重复校验
@@ -2039,7 +2145,13 @@ class DesktopAgent:
             except Exception:
                 pass
             llm_start = time.time()
-            resp = self.llm.chat(self.messages, tools_schema)
+            # T26：把停止检查点挂到 LLM 客户端（llm 可能在首轮才创建，幂等
+            # 设置）。流式循环逐 chunk 调用，点停止立即中断——不再等整轮返回
+            self.llm.stop_check = lambda: self._stop_requested
+            try:
+                resp = self.llm.chat(self.messages, tools_schema)
+            except LLMStopped:
+                return "已按要求停止执行。"
             _u = resp.get("_usage") or {}
             self.total_tokens += (_u.get("prompt") or 0) + (_u.get("eval") or 0)
             self._log(f"思考用时 {time.time() - llm_start:.1f} 秒"
@@ -2133,7 +2245,12 @@ class DesktopAgent:
                     self._last_locate_failed = False
                 else:
                     exec_start = time.time()
-                    result = self._execute_tool(name, args, risk)
+                    # T26：工具重试退避中点停止 → LLMStopped 从重试环穿透，
+                    # 立即结束任务（记成停止而非错误）
+                    try:
+                        result = self._execute_tool(name, args, risk)
+                    except LLMStopped:
+                        return "已按要求停止执行。"
                     self._log(f"工具执行用时 {time.time() - exec_start:.1f} 秒")
                     if name == "locate_on_screen":
                         self._image_located = "found at" in str(result)

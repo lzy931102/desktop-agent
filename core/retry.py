@@ -34,7 +34,8 @@ def is_permanent_failure(result) -> bool:
 
 
 def run_with_retry(exec_fn, tool_name: str, retryable: bool,
-                   auditor=None, on_retry=None, max_retries: int = MAX_RETRIES):
+                   auditor=None, on_retry=None, max_retries: int = MAX_RETRIES,
+                   stop_check=None):
     """执行 exec_fn 并按需重试。
 
     返回 (result, attempts, final_ok)：
@@ -42,6 +43,8 @@ def run_with_retry(exec_fn, tool_name: str, retryable: bool,
     - attempts      实际执行次数（含首次）
     - final_ok      最终是否成功
     on_retry(attempt, max_retries, wait) 在每次决定重试时回调。
+    stop_check（T26）：退避睡眠期间每次调用——请求停止时由它抛异常
+    （如 agent_loop.LLMStopped）穿透出去，不等退避睡满。
     """
     attempts = 0
     while True:
@@ -69,4 +72,17 @@ def run_with_retry(exec_fn, tool_name: str, retryable: bool,
                 on_retry(attempts, max_retries, wait)
             except Exception:
                 pass
-        time.sleep(wait)
+        _interruptible_sleep(wait, stop_check)
+
+
+def _interruptible_sleep(seconds: float, stop_check=None):
+    """T26：退避睡眠按 0.2 秒分片，每片前调 stop_check——点停止后最多
+    0.2 秒退出重试环，不再干等最长 4 秒的退避（1 秒内停的目标项）"""
+    end = time.time() + seconds
+    while True:
+        if stop_check is not None:
+            stop_check()
+        remain = end - time.time()
+        if remain <= 0:
+            return
+        time.sleep(min(0.2, remain))
