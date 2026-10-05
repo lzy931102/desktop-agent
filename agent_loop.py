@@ -1030,7 +1030,7 @@ def _open_app(args, record=None):
             "purpose": str(args.get("purpose", "") or ""),
             "hwnd": _capture_app_window(exe, pre), "opened_at": time.time(),
         })
-        # T31：记事本会话恢复防护（详见 _notepad_session_guard）
+        # T32：记事本会话恢复防护（无条件新建空白标签，详见 _notepad_session_guard）
         note = _notepad_session_guard(record[-1])
     else:
         note = ""
@@ -1038,19 +1038,25 @@ def _open_app(args, record=None):
 
 
 def _notepad_session_guard(entry) -> str:
-    """T31 记事本会话恢复防护：open_app 刚开的记事本若激活的是「上次
-    未保存的会话标签」（Win11 记事本恢复会话，标题带 * 前缀），输入会
-    直接写进用户的旧文档（2026-10-05 exe 验收实测：用户文档被叠进
-    3 份"你好"——audit 回显「*你好你好你好 - Notepad」）。自动
-    Ctrl+N / Ctrl+Shift+N 另开干净窗口（Win11 记事本两种新建快捷键，
-    探针环境过不了前台锁，真实生效形态由手动验证兜底），把 T22 锚定
-    换过去；用户的原窗口绝不动。返回追加到 open_app 结果的说明。"""
+    """T32 记事本会话恢复防护：open_app 刚开的记事本**无条件**新建空白
+    标签，让输入锚定必然落在新空白页，与用户旧文档彻底隔离。
+
+    背景（2026-10-05 实测两级事故）：Win11 记事本「启动时恢复上次会话」
+    会把未保存文档放进新开窗口的激活标签——①输入直接叠进用户旧文档
+    （audit 15:15/17:33/18:47 共 6 次回显「*你好你好…」）；②T31 按 *
+    判别撞不过异步竞态：恢复标签的 * 标记出现晚于检查时刻（18:47 四连
+    漏，audit 铁证：open_app 检查时干净、粘贴回显已带 *），无条件新建
+    不依赖恢复时序。Ctrl+N / Ctrl+Shift+N（Win11 记事本两种新建快捷键，
+    本机实测 Ctrl+N=新标签）只新建，绝无关闭标签/删除内容的操作；用户
+    的原标签绝不动。快捷键只在窗口确认切到前台后才发——激活失败绝不
+    盲发（Ctrl+N 落进未知前台窗口是危险操作）；干净标题且新建成功时
+    零文案（克制，不打扰）。type_text 的 * 拒粘检查保留作最后兜底。
+    返回追加到 open_app 结果的说明。"""
     exe = entry.get("exe", "")
     hwnd = int(entry.get("hwnd") or 0)
     if exe != "notepad.exe" or not hwnd:
         return ""
-    if not _window_title(hwnd).startswith("*"):
-        return ""  # 干净的新窗口/标签，无需防护
+    was_restored = _window_title(hwnd).startswith("*")
     try:
         import ctypes
         from ctypes import wintypes
@@ -1069,8 +1075,12 @@ def _notepad_session_guard(entry) -> str:
         finally:
             u32.SetWindowPos(hwnd, -2, 0, 0, 0, 0, 0x0053)  # HWND_NOTOPMOST
         if not ok:
-            return ("记事本恢复了上次未保存的文档，但未能把窗口切到前台——"
-                    "请提醒用户手动新建空白标签页，不要向当前文档输入")
+            # 激活失败绝不发快捷键；带 * 时如实报告，干净时静默放行
+            # （输入前还有 type_text 的前台校验与 * 拒粘两道兜底）
+            if was_restored:
+                return ("记事本恢复了上次未保存的文档，但未能把窗口切到前台——"
+                        "请提醒用户手动新建空白标签页，不要向当前文档输入")
+            return ""
         before = set(_candidate_windows(exe))
         for keys in (("ctrl", "n"), ("ctrl", "shift", "n")):
             pyautogui.hotkey(*keys)
@@ -1079,16 +1089,24 @@ def _notepad_session_guard(entry) -> str:
                      if h not in before and _window_alive(h)]
             if fresh:
                 entry["hwnd"] = fresh[0]
-                return ("记事本恢复了上次未保存的文档，已另开空白新窗口输入，"
-                        "原窗口未动")
+                if was_restored:
+                    return ("记事本恢复了上次未保存的文档，已另开空白新窗口"
+                            "输入，原窗口未动")
+                return ""
             if not _window_title(hwnd).startswith("*"):
-                return ("记事本恢复了上次未保存的文档，已新建空白标签，"
-                        "原标签未动")
-        return ("记事本恢复了上次未保存的文档，未能另开空白窗口——"
-                "请提醒用户手动处理，不要向当前文档输入")
+                if was_restored:
+                    return ("记事本恢复了上次未保存的文档，已新建空白标签，"
+                            "原标签未动")
+                return ""
+        if was_restored:
+            return ("记事本恢复了上次未保存的文档，未能另开空白窗口——"
+                    "请提醒用户手动处理，不要向当前文档输入")
+        return ""
     except Exception:
-        return ("记事本恢复了上次未保存的文档，但自动另开空白窗口失败——"
-                "请提醒用户手动处理，不要向当前文档输入")
+        if _window_title(hwnd).startswith("*"):
+            return ("记事本恢复了上次未保存的文档，但自动另开空白窗口失败——"
+                    "请提醒用户手动处理，不要向当前文档输入")
+        return ""
 
 
 def _open_url(args, record=None):

@@ -1,4 +1,4 @@
-"""T31 记事本会话恢复防护回归测试。
+"""T31/T32 记事本会话恢复防护回归测试。
 
 背景（2026-10-05 用户 exe 验收实测，audit 铁证）：Win11 记事本「启动时
 恢复上次会话」会把未保存文档放进新开窗口的激活标签——Agent open_app
@@ -9,16 +9,22 @@ T30 的焦点校验是窗口级的（窗口对就放行），防不住窗口内�
 判别信号：恢复标签未保存，窗口标题带 * 前缀（探针三次实测一致）；
 Agent 刚 open_app 的干净记事本标题是「无标题 - Notepad」（无 *）。
 
+T32 改无条件方案（2026-10-05 18:47 四连漏 audit 铁证后立）：恢复标签
+的 * 标记异步出现、晚于检查时刻（open_app 检查时干净、粘贴回显已带
+*），按 * 判别有竞态死角——开窗后**无条件**置顶+click 激活 → Ctrl+N
+新建空白标签（Ctrl+N 只新建，绝无关闭标签/删除内容操作；本机实测
+Ctrl+N=新标签），锚定必然落在新空白页，不依赖恢复时序。
+
 四块机制，全部离线（不开真窗口、mock 走 monkeypatch 自动还原）：
-  1. open_app 防护：notepad 开窗后标题带 * → 置顶+click 激活 →
-     Ctrl+N / Ctrl+Shift+N 双试 → 新窗口出现则换锚（record 更新 hwnd）；
-     无新窗口但原窗口标题变干净（同窗口新标签）也算成功；两招都失败
-     如实报告（模型不输入直接汇报用户）
+  1. open_app 防护：notepad 开窗后**无条件**置顶+click 激活 →
+     Ctrl+N（失败补 Ctrl+Shift+N）→ 新窗口出现则换锚（record 更新
+     hwnd）；无新窗口但原窗口标题变干净（同窗口新标签）也算成功；
+     原标题带 * 且两招都失败 → 如实报告（模型不输入直接汇报用户）；
+     原标题干净时新建成功零文案（克制）；激活失败绝不发快捷键
   2. type_text 兜底拒粘：锚定 hwnd 是记事本且粘贴前标题带 * → 拒粘
      （剪贴板/键盘一次都不碰），引导告知用户——不给"自己 Ctrl+N"
      的引导（新窗口 hwnd 不在记录里会造成锚定死循环）
-  3. 回归保护：标题干净（无 *）行为与旧版完全一致；非记事本应用
-     （calc 等）不做此防护
+  3. 回归保护：非记事本应用（calc 等）不做此防护
   4. 真实 GUI 进程才过得了前台锁（SetForegroundWindow 规则）——
      离线测试只 mock 到行为层，前置/快捷键的真实生效由手动验证兜底
 """
@@ -133,19 +139,42 @@ def test_open_app_notepad_restored_tries_shift_variant_on_failure(monkeypatch):
 
 # ==================== 2. 回归保护：干净标题 / 非记事本不受影响 ====================
 
-def test_open_app_notepad_clean_title_unchanged(monkeypatch):
-    """干净标题（无 *）：不做防护，行为与旧版完全一致（不发 hotkey）"""
+def test_open_app_notepad_clean_title_unconditional_new_tab(monkeypatch):
+    """干净标题（无 *）也无条件 Ctrl+N（T32：恢复标签的 * 异步出现晚于
+    检查时刻，按 * 判别有竞态死角——18:47 四连漏 audit 铁证）；只发
+    Ctrl+N 一招（标题已干净，无需补第二招），绝无其他按键（不含任何
+    关标签/删内容的键），锚定不变，干净时零文案"""
     _fake_startfile(monkeypatch)
     monkeypatch.setattr(agent_loop, "_capture_app_window", lambda *a, **k: 0x1111)
     monkeypatch.setattr(agent_loop, "_window_alive", lambda h: True)
     monkeypatch.setattr(agent_loop, "_window_title", lambda h: "无标题 - Notepad")
     monkeypatch.setattr(agent_loop, "_window_process_exe", lambda h: "notepad.exe")
+    monkeypatch.setattr(agent_loop, "_ensure_foreground",
+                        lambda h, poll_seconds=2.0: (True, "无标题 - Notepad"))
+    monkeypatch.setattr(agent_loop.pyautogui, "click", lambda *a, **kw: None)
     hot = []
     monkeypatch.setattr(agent_loop.pyautogui, "hotkey", lambda *k, **kw: hot.append(k))
     out, record = _open_notepad()
-    assert out == "opened notepad"
-    assert hot == []                             # 没有任何快捷键注入
-    assert record[0]["hwnd"] == 0x1111
+    assert hot == [("ctrl", "n")]                # 无条件新标签，且仅此一招
+    assert record[0]["hwnd"] == 0x1111           # 同窗口新标签，锚定不变
+    assert out == "opened notepad"               # 干净时零文案（克制）
+
+
+def test_open_app_notepad_no_hotkey_when_activation_fails(monkeypatch):
+    """激活失败绝不发快捷键——Ctrl+N 落进未知前台窗口是危险操作"""
+    _fake_startfile(monkeypatch)
+    monkeypatch.setattr(agent_loop, "_capture_app_window", lambda *a, **k: 0x1111)
+    monkeypatch.setattr(agent_loop, "_window_alive", lambda h: True)
+    monkeypatch.setattr(agent_loop, "_window_title", lambda h: "无标题 - Notepad")
+    monkeypatch.setattr(agent_loop, "_window_process_exe", lambda h: "notepad.exe")
+    monkeypatch.setattr(agent_loop, "_ensure_foreground",
+                        lambda h, poll_seconds=2.0: (False, "别的窗口"))
+    monkeypatch.setattr(agent_loop.pyautogui, "click", lambda *a, **kw: None)
+    hot = []
+    monkeypatch.setattr(agent_loop.pyautogui, "hotkey", lambda *k, **kw: hot.append(k))
+    out, record = _open_notepad()
+    assert hot == []                             # 一颗键都不发
+    assert out == "opened notepad"               # 静默放行，交给下游兜底
 
 
 def test_open_app_calc_skips_protection(monkeypatch):
