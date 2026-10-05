@@ -1297,10 +1297,12 @@ def _wait_tool(args, stop_requested=None):
 
 
 def _type_text_tool(args: dict) -> str:
-    """type_text 工具入口（T30）：从 T22 开窗记录取锚定 hwnd 交给输入实现，
+    """type_text 工具入口（T30b）：从 T22 开窗记录取锚定 hwnd 交给输入实现，
     粘贴前强制焦点校验；成功回显补上"输入到了哪个窗口"。无锚定（本任务
     没成功 open_app 过，如开始菜单敲字流程）时保持原行为可输入，但回显
-    同样报出接收窗口——输入去向始终可见，模型粘错目标能当场发现。"""
+    同样报出接收窗口——输入去向始终可见，模型粘错目标能当场发现。
+    这是**有意保留的回退**而非遗漏：开始菜单敲字流程没有可锚定的窗口，
+    拒粘会把它弄坏（残余限制已记 docs/踩坑.md #9）。"""
     target = _latest_app_hwnd(args.pop("_agent_opened", None))
     refused = _type_text_with_space(args["text"], args.get("interval", 0.05),
                                     target_hwnd=target)
