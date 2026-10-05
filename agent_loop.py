@@ -126,6 +126,39 @@ class LLMClient:
         if stop:
             raise LLMStopped()
 
+    def interrupt(self):
+        """立即中断进行中的 LLM 调用（T26）：关闭底层 HTTP 流。
+
+        流式检查点只在「收到 chunk 时」生效——服务端 prompt 处理阶段
+        长时间不发数据（实测 8~10k token 系统提示词在智谱高峰期首块
+        可达 10~20 秒），点停止要干等首块。这里直接从另一线程关连接，
+        阻塞读立即失败，由 chat 方法把连接异常转成 LLMStopped。"""
+        self._interrupted = True
+        stream = getattr(self, "_active_stream", None)
+        if stream is not None:
+            try:
+                stream.close()
+            except Exception:
+                pass
+            return
+        # create() 建立连接阶段（连接+发送长 prompt，1~3 秒）还没有流
+        # 对象可关：关整个客户端连接池让阻塞中的 create 立即失败。
+        # 只在用户明确停止时走到这里——本任务必然终止，GUI 的下一个
+        # 任务经 build_llm_client 新建客户端，互不影响
+        client = getattr(self, "client", None)
+        if client is not None and hasattr(client, "close"):
+            try:
+                client.close()
+            except Exception:
+                pass
+
+    def _raise_if_interrupted(self, err: Exception):
+        """连接异常若由 interrupt() 引起 → 转成 LLMStopped（否则原样抛）。
+        不转的话 FallbackLLMClient 会把「停止」当故障触发云端 fallback"""
+        if getattr(self, "_interrupted", False):
+            raise LLMStopped() from err
+        raise err
+
     def _create_client(self):
         if self.config.provider == LLMProvider.OLLAMA:
             return None
@@ -170,44 +203,65 @@ class LLMClient:
         # 停止（实测点停止后 27 秒才真停），界面也没有进度。流式逐 chunk
         # 检查停止请求，点停止立即中断。
         kwargs["stream"] = True
+        # T26：智谱实测确认支持 include_usage（usage 随最后一块到达，
+        # 有时挂带 choices 的块上有时挂空块上——两种都接）
+        kwargs["stream_options"] = {"include_usage": True}
         parts: List[str] = []
         tool_calls: List[Dict] = []
         usage = {"prompt": 0, "eval": 0}
         started = time.time()
         first_chunk_at = None
-        for chunk in self.client.chat.completions.create(**kwargs):
-            self._check_stop()
-            if not getattr(chunk, "choices", None):
-                # OpenAI 流式协议：usage 随空 choices 的收尾块到达
+        self._interrupted = False
+        try:
+            stream = self.client.chat.completions.create(**kwargs)
+        except Exception as e:
+            # create 建立连接阶段被 interrupt 关掉客户端：转 LLMStopped
+            self._raise_if_interrupted(e)
+            raise
+        self._active_stream = stream
+        try:
+            for chunk in stream:
+                self._check_stop()
+                # usage 可能挂空 choices 收尾块，也可能挂最后一块（智谱实测）
                 u = getattr(chunk, "usage", None)
-                if u:
-                    usage = {"prompt": getattr(u, "prompt_tokens", 0) or 0,
-                             "eval": getattr(u, "completion_tokens", 0) or 0}
-                continue
-            delta = chunk.choices[0].delta
-            piece = getattr(delta, "content", None) or ""
-            if piece:
-                if first_chunk_at is None:
-                    first_chunk_at = time.time()
-                    self._note(f"首字用时 {first_chunk_at - started:.1f} 秒，开始生成…")
-                parts.append(piece)
-            for tc in (getattr(delta, "tool_calls", None) or []):
-                idx = getattr(tc, "index", None)
-                if idx is None:
-                    idx = max(0, len(tool_calls) - 1)
-                while len(tool_calls) <= idx:
-                    tool_calls.append({"id": "", "type": "function",
-                                       "function": {"name": "", "arguments": ""}})
-                slot = tool_calls[idx]
-                if getattr(tc, "id", None):
-                    slot["id"] = tc.id
-                fn = getattr(tc, "function", None)
-                if fn is not None:
-                    # name 一次性到达用覆盖；arguments 分片到达用拼接
-                    if getattr(fn, "name", None):
-                        slot["function"]["name"] = fn.name
-                    if getattr(fn, "arguments", None):
-                        slot["function"]["arguments"] += fn.arguments
+                pt = getattr(u, "prompt_tokens", 0) or 0
+                ct = getattr(u, "completion_tokens", 0) or 0
+                if pt or ct:
+                    usage = {"prompt": pt, "eval": ct}
+                if not getattr(chunk, "choices", None):
+                    continue
+                delta = chunk.choices[0].delta
+                piece = getattr(delta, "content", None) or ""
+                if piece:
+                    if first_chunk_at is None:
+                        first_chunk_at = time.time()
+                        self._note(f"首字用时 {first_chunk_at - started:.1f} 秒，开始生成…")
+                    parts.append(piece)
+                for tc in (getattr(delta, "tool_calls", None) or []):
+                    idx = getattr(tc, "index", None)
+                    if idx is None:
+                        idx = max(0, len(tool_calls) - 1)
+                    while len(tool_calls) <= idx:
+                        tool_calls.append({"id": "", "type": "function",
+                                           "function": {"name": "", "arguments": ""}})
+                    slot = tool_calls[idx]
+                    if getattr(tc, "id", None):
+                        slot["id"] = tc.id
+                    fn = getattr(tc, "function", None)
+                    if fn is not None:
+                        # name 一次性到达用覆盖；arguments 分片到达用拼接
+                        if getattr(fn, "name", None):
+                            slot["function"]["name"] = fn.name
+                        if getattr(fn, "arguments", None):
+                            slot["function"]["arguments"] += fn.arguments
+        except Exception as e:
+            self._raise_if_interrupted(e)
+        finally:
+            self._active_stream = None
+            try:
+                stream.close()
+            except Exception:
+                pass
         msg_content = "".join(parts)
         return {
             "role": "assistant",
@@ -351,36 +405,48 @@ class LLMClient:
         last_note_at = 0.0
         self._note("正在请求本地模型（CPU 推理，长提示词需 1~3 分钟，请勿关闭窗口）…")
 
-        with session.post(url, json=payload, stream=True, timeout=timeout) as r:
-            r.raise_for_status()
-            for raw in r.iter_lines(decode_unicode=False):
-                # T26：逐块检查停止请求——CPU 推理动辄 1~3 分钟，
-                # 原先要等整段生成完才能停
-                self._check_stop()
-                if not raw:
-                    continue
-                try:
-                    data = json.loads(raw.decode("utf-8", "replace"))
-                except ValueError:
-                    continue
-                msg = data.get("message") or {}
-                piece = msg.get("content") or ""
-                if piece:
-                    if first_chunk_at is None:
-                        first_chunk_at = time.time()
-                        self._note(f"首字用时 {first_chunk_at - started:.1f} 秒，开始生成…")
-                    parts.append(piece)
-                if msg.get("tool_calls"):
-                    tool_calls.extend(msg["tool_calls"])
-                if data.get("done"):
-                    # token 用量透传（供界面统计；Ollama /api/chat 原生字段）
-                    usage = {"prompt": data.get("prompt_eval_count") or 0,
-                             "eval": data.get("eval_count") or 0}
-                # 每 5 秒报一次进度，让界面能看出「在动」而不是卡死
-                now = time.time()
-                if now - last_note_at >= 5:
-                    last_note_at = now
-                    self._note(f"生成中… 已 {sum(len(p) for p in parts)} 字 / {now - started:.0f} 秒")
+        self._interrupted = False
+        resp = session.post(url, json=payload, stream=True, timeout=timeout)
+        self._active_stream = resp
+        try:
+            try:
+                resp.raise_for_status()
+                for raw in resp.iter_lines(decode_unicode=False):
+                    # T26：逐块检查停止请求——CPU 推理动辄 1~3 分钟，
+                    # 原先要等整段生成完才能停
+                    self._check_stop()
+                    if not raw:
+                        continue
+                    try:
+                        data = json.loads(raw.decode("utf-8", "replace"))
+                    except ValueError:
+                        continue
+                    msg = data.get("message") or {}
+                    piece = msg.get("content") or ""
+                    if piece:
+                        if first_chunk_at is None:
+                            first_chunk_at = time.time()
+                            self._note(f"首字用时 {first_chunk_at - started:.1f} 秒，开始生成…")
+                        parts.append(piece)
+                    if msg.get("tool_calls"):
+                        tool_calls.extend(msg["tool_calls"])
+                    if data.get("done"):
+                        # token 用量透传（供界面统计；Ollama /api/chat 原生字段）
+                        usage = {"prompt": data.get("prompt_eval_count") or 0,
+                                 "eval": data.get("eval_count") or 0}
+                    # 每 5 秒报一次进度，让界面能看出「在动」而不是卡死
+                    now = time.time()
+                    if now - last_note_at >= 5:
+                        last_note_at = now
+                        self._note(f"生成中… 已 {sum(len(p) for p in parts)} 字 / {now - started:.0f} 秒")
+            except Exception as e:
+                self._raise_if_interrupted(e)
+        finally:
+            self._active_stream = None
+            try:
+                resp.close()
+            except Exception:
+                pass
 
         content = "".join(parts)
         # 兼容层：GGUF 导入的模型常把工具调用输出为文本（```json {...}``` 或
@@ -427,6 +493,16 @@ class FallbackLLMClient:
     def stop_check(self, cb):
         self.local.stop_check = cb
         self.cloud.stop_check = cb
+
+    def interrupt(self):
+        """T26：立即中断当前调用——本地/云端正在阻塞的流都关掉"""
+        for side in (self.local, self.cloud):
+            it = getattr(side, "interrupt", None)
+            if it:
+                try:
+                    it()
+                except Exception:
+                    pass
 
     def chat(self, messages: List[Dict], tools: List[Dict] = None) -> Dict:
         try:
@@ -1910,6 +1986,14 @@ class DesktopAgent:
     def stop(self):
         """请求停止执行，在下一轮开始前生效"""
         self._stop_requested = True
+        # T26：连接级立即中断——流式检查点只在收到 chunk 时生效，服务端
+        # prompt 处理阶段（首块前）不发数据，关连接让阻塞读立即失败
+        interrupt = getattr(self.llm, "interrupt", None) if self.llm else None
+        if interrupt:
+            try:
+                interrupt()
+            except Exception:
+                pass
 
     def _raise_if_stopped(self):
         """T26：给 run_with_retry 的 stop_check——请求停止时抛 LLMStopped
