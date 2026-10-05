@@ -1,7 +1,8 @@
 """动作后校验：每步关键操作后验证是否真的生效，失败信号会触发重试。
 
 可验证的动作：
-- open_app  → 枚举窗口，确认应用窗口已出现
+- open_app  → 枚举窗口做差集，确认"新"应用窗口已出现（T30；
+              无动作前快照时退回存在性检查）
 - click     → 前后截图对比，确认界面发生了变化（best-effort，无变化仅警告）；
               点在控件上（Button/MenuItem 等，REL-P1-4）走强校验：
               UIA 断言目标元素/焦点变化，确定落空才触发重试，
@@ -20,7 +21,8 @@ if os.name == "nt":
     _user32 = __import__("ctypes").windll.user32
 
 
-def _window_titles() -> list:
+def _enum_visible_windows() -> list:
+    """全部可见顶层窗口的 (hwnd, 标题) 列表（T30 差集校验用）"""
     out = []
 
     import ctypes
@@ -34,11 +36,32 @@ def _window_titles() -> list:
             if n > 0:
                 buf = ctypes.create_unicode_buffer(n + 1)
                 user32.GetWindowTextW(hwnd, buf, n + 1)
-                out.append(buf.value)
+                out.append((hwnd, buf.value))
         return True
 
     user32.EnumWindows(cb, 0)
     return out
+
+
+def _window_titles() -> list:
+    return [title for _hwnd, title in _enum_visible_windows()]
+
+
+def snapshot_windows() -> list:
+    """动作前窗口快照 [(hwnd, 标题), ...]（T30：open_app 前取，供差集校验）"""
+    return _enum_visible_windows()
+
+
+def _is_new_app_window(current: list, pre_windows: list,
+                       hints: tuple, key: str) -> bool:
+    """快照之外新出现的 hwnd 里，有没有标题命中 hints/key 的（T30 差集）。
+
+    按 hwnd 差集而不是标题差集：已有窗口的标题变化（如记事本的 * 未保存
+    标记是异步刷新的）不得误判成"新窗口"——2026-10-05 手动验证实测。"""
+    pre_hwnds = {hwnd for hwnd, _title in pre_windows}
+    return any(any(h.lower() in title.lower() for h in hints if h)
+               or key in title.lower()
+               for hwnd, title in current if hwnd not in pre_hwnds)
 
 
 # open_app 白名单里 exe 名 → 常见窗口标题关键词
@@ -58,8 +81,14 @@ _APP_TITLE_HINTS = {
 
 
 def verify_open_app(app_name: str, attempts: int = 4,
-                    interval: float = 1.0) -> tuple:
+                    interval: float = 1.0, pre_windows: list = None) -> tuple:
     """确认打开应用后窗口已出现。
+
+    T30 差集：调用方在 open_app 动作前用 snapshot_windows() 取快照传入
+    （pre_windows），只有"新出现的 hwnd 且标题命中"才算打开成功——修复前
+    只查"屏幕上有没有"，用户自己开着的同名窗口就能让校验假阳性通过
+    （2026-10-05 实录：新窗口没出现、type_text 盲粘进了用户已有窗口，
+    校验却报"窗口已出现"）。无快照时（旧调用方/直调）退回存在性检查。
 
     轮询等待（发现 G②）：应用冷启动要数秒才出窗口，修复前只查一次，
     explorer 实测每次误报"未检测到应用窗口"。最多等 attempts×interval 秒，
@@ -73,13 +102,20 @@ def verify_open_app(app_name: str, attempts: int = 4,
     if hints is None:
         hints = [app_name]
     for i in range(attempts):
-        titles = _window_titles()
-        joined = " ".join(titles).lower()
-        if any(h.lower() in joined for h in hints if h) or \
-                any(key in t.lower() for t in titles):
-            return True, "窗口已出现"
+        if pre_windows is not None:
+            if _is_new_app_window(_enum_visible_windows(), pre_windows,
+                                  hints, key):
+                return True, "新窗口已出现"
+        else:
+            titles = _window_titles()
+            joined = " ".join(titles).lower()
+            if any(h.lower() in joined for h in hints if h) or \
+                    any(key in t.lower() for t in titles):
+                return True, "窗口已出现"
         if i < attempts - 1:
             time.sleep(interval)
+    if pre_windows is not None:
+        return False, "未检测到新窗口——可能只聚焦了已有窗口，并未新开"
     return False, "未检测到应用窗口"
 
 

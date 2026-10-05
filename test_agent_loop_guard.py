@@ -618,7 +618,7 @@ def test_type_text_echo_explicit_complete(monkeypatch):
     """发现 A（重放实录：回显截断 50 字符 → 模型误以为没输完，同一内容
     重输 6 遍烧 12 轮）：短文本全文回显 + 明确字数；长文本明确字数不回显"""
     monkeypatch.setattr(agent_loop, "_type_text_with_space",
-                        lambda text, interval: "")
+                        lambda text, interval, target_hwnd=0: "")
     short = agent_loop.TOOL_FUNCTIONS["type_text"]({"text": "345"})
     assert "typed: 345" in short and "已完整输入" in short
     long_msg = agent_loop.TOOL_FUNCTIONS["type_text"]({"text": "长" * 200})

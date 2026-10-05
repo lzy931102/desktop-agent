@@ -456,7 +456,7 @@ TOOLS_SCHEMA = [
         "type": "function",
         "function": {
             "name": "type_text",
-            "description": "在光标位置输入文本",
+            "description": "在光标位置输入文本（粘贴前会校验前台是本任务打开的目标窗口，不符则拒粘）",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -784,7 +784,20 @@ def _locate_on_screen(args: dict) -> str:
         return f"错误: 图像识别异常 - {e}，请停止操作"
 
 
-def _type_text_with_space(text: str, interval: float = 0.05):
+def _type_text_with_space(text: str, interval: float = 0.05,
+                          target_hwnd: int = 0):
+    """粘贴输入。target_hwnd 非零时（T30）先把目标窗口拉到前台并确认：
+    前台不是目标就拒绝粘贴——杜绝盲粘进用户自己的文档（2026-10-05 实录：
+    用户记事本在前台，"你好"被粘进用户文件，任务还报成功）。
+    返回 ""=已输入；非空=拒绝原因（工具层直接采信，不再拼回显）。"""
+    if target_hwnd:
+        if not _window_alive(target_hwnd):
+            return "错误: 目标窗口已关闭，已拒绝输入（请重新 open_app 后再输入）"
+        ok, fg_title = _ensure_foreground(target_hwnd)
+        if not ok:
+            target_title = _window_title(target_hwnd)
+            return (f"错误: 前台是「{fg_title or '未知窗口'}」，不是目标"
+                    f"「{target_title or '未知窗口'}」，已拒绝输入（不盲粘）")
     # 优先使用剪贴板粘贴，避免空格丢失且支持中文
     try:
         import pyperclip
@@ -801,6 +814,7 @@ def _type_text_with_space(text: str, interval: float = 0.05):
                 else:
                     pyautogui.write(char)
                 time.sleep(interval)
+    return ""
 
 
 def _open_app(args, record=None):
@@ -992,6 +1006,66 @@ def _window_alive(hwnd) -> bool:
         return bool(ctypes.windll.user32.IsWindow(hwnd))
     except Exception:
         return False
+
+
+def _ensure_foreground(hwnd, poll_seconds: float = 2.0) -> tuple:
+    """把目标窗口拉到前台并确认真的切过去了（T30）。
+
+    后台进程直接 SetForegroundWindow 可能被系统前台锁静默拒绝
+    （2026-10-03 实测：startfile 拉起的 UWP 应用不抢前台），所以
+    SetForeground 后轮询 GetForegroundWindow 比对；没切过去就临时附加到
+    前台线程再试（AttachThreadInput，前台锁的标准解法，同 docs/踩坑.md #5
+    的 HWND_TOPMOST 先例）。返回 (是否成功, 当前前台窗口标题)——失败时
+    该标题就是"占了前台的那个窗口"，给拒粘信息用。
+    """
+    if not _window_alive(hwnd):
+        return False, ""
+    try:
+        import ctypes
+        user32 = ctypes.windll.user32
+        kernel32 = ctypes.windll.kernel32
+        deadline = time.time() + poll_seconds
+        while True:
+            user32.SetForegroundWindow(hwnd)
+            for _ in range(6):
+                if user32.GetForegroundWindow() == hwnd:
+                    return True, _window_title(hwnd)
+                time.sleep(0.05)
+            fg = user32.GetForegroundWindow()
+            if fg and time.time() < deadline:
+                fg_tid = user32.GetWindowThreadProcessId(fg, None)
+                my_tid = kernel32.GetCurrentThreadId()
+                if fg_tid and fg_tid != my_tid:
+                    user32.AttachThreadInput(my_tid, fg_tid, True)
+                    user32.SetForegroundWindow(hwnd)
+                    user32.AttachThreadInput(my_tid, fg_tid, False)
+            if time.time() >= deadline:
+                break
+        fg = user32.GetForegroundWindow()
+        return False, _window_title(fg)
+    except Exception:
+        return False, ""
+
+
+def _foreground_title() -> str:
+    """当前前台窗口标题（T30：type_text 回显报出"输入到了哪个窗口"）"""
+    if os.name != "nt":
+        return ""
+    try:
+        import ctypes
+        return _window_title(ctypes.windll.user32.GetForegroundWindow())
+    except Exception:
+        return ""
+
+
+def _latest_app_hwnd(record) -> int:
+    """T22 开窗记录里最近一个成功抓到窗口的 app 条目 hwnd；没有返回 0（T30）"""
+    if not record:
+        return 0
+    for entry in reversed(record):
+        if entry.get("type") == "app" and entry.get("hwnd"):
+            return entry["hwnd"]
+    return 0
 
 
 def _window_class(hwnd) -> str:
@@ -1222,14 +1296,29 @@ def _wait_tool(args, stop_requested=None):
         time.sleep(min(1.0, remaining))
 
 
+def _type_text_tool(args: dict) -> str:
+    """type_text 工具入口（T30）：从 T22 开窗记录取锚定 hwnd 交给输入实现，
+    粘贴前强制焦点校验；成功回显补上"输入到了哪个窗口"。无锚定（本任务
+    没成功 open_app 过，如开始菜单敲字流程）时保持原行为可输入，但回显
+    同样报出接收窗口——输入去向始终可见，模型粘错目标能当场发现。"""
+    target = _latest_app_hwnd(args.pop("_agent_opened", None))
+    refused = _type_text_with_space(args["text"], args.get("interval", 0.05),
+                                    target_hwnd=target)
+    if refused:
+        return refused
+    if len(args["text"]) <= 80:
+        echo = f"typed: {args['text']}（共 {len(args['text'])} 字符，已完整输入）"
+    else:
+        echo = f"已完整输入 {len(args['text'])} 字符（长文本不回显全文）"
+    return f"{echo} → 已输入到「{_foreground_title() or '未知窗口'}」"
+
+
 TOOL_FUNCTIONS = {
     "click": lambda args: pyautogui.click(args["x"], args["y"], button=args.get("button", "left"), clicks=args.get("clicks", 1)) or f"clicked at ({args['x']}, {args['y']})",
     # 回显必须无歧义表达"已完整输入"（发现 A，2026-10-01 重放）：修复前
-    # 截断 50 字符，模型误以为没输完，同一内容重输 6 遍烧 12 轮
-    "type_text": lambda args: (_type_text_with_space(args["text"], args.get("interval", 0.05)) or (
-        f"typed: {args['text']}（共 {len(args['text'])} 字符，已完整输入）"
-        if len(args["text"]) <= 80 else
-        f"已完整输入 {len(args['text'])} 字符（长文本不回显全文）")),
+    # 截断 50 字符，模型误以为没输完，同一内容重输 6 遍烧 12 轮。
+    # T30：粘贴前焦点校验 + 回显报出接收窗口，见 _type_text_tool
+    "type_text": lambda args: _type_text_tool(args),
     "press_key": lambda args: pyautogui.press(args["key"], presses=args.get("presses", 1)) or f"pressed {args['key']}",
     "hotkey": lambda args: pyautogui.hotkey(*args["keys"]) or f"hotkey {'+'.join(args['keys'])}",
     "move_to": lambda args: pyautogui.moveTo(args["x"], args["y"], duration=args.get("duration", 0.5)) or f"moved to ({args['x']}, {args['y']})",
@@ -1312,7 +1401,9 @@ SYSTEM_PROMPT = """你是一个电脑操作助手，通过工具帮用户完成�
 - create_folder(path): 在用户目录下新建文件夹（一次可建多级，已存在不算错误）。
   「整理文件/建分类文件夹」类任务先用它把要用的目标文件夹建好，
   不要在资源管理器里手动右键新建
-- click(x, y): 点击屏幕坐标；type_text(text): 在光标处输入文本（支持中文，自动粘贴）
+- click(x, y): 点击屏幕坐标；type_text(text): 在光标处输入文本（支持中文，自动粘贴）。
+  输入文字前确认前台窗口是目标窗口，不匹配就报错拒粘，禁止盲粘；工具报"前台不是目标"
+  时先用 list_windows/focus_window 弄清窗口状态，不要原样重试同一调用
 - press_key(key) / hotkey(keys): 按键与组合键；scroll(clicks): 滚动；move_to(x, y): 移动鼠标
 - clipboard_read() / clipboard_write(text): 读写剪贴板
 - verify_message_sent(expected_text): 发消息后验证消息是否真的出现在聊天窗口
@@ -1515,11 +1606,20 @@ class DesktopAgent:
         # 的函数表），分段睡眠让停止请求秒级生效，而不是等下一个工具边界
         if name == "wait":
             return _wait_tool(args, lambda: self._stop_requested)
-        # T22：打开/关闭类工具需要本任务的开窗记录。记录表经 args 搭载、
-        # 在 TOOL_FUNCTIONS 入口 lambda 里 pop 取走——审计与结果回调看到的
-        # 参数保持干净（同 wait 特判：函数表无 self，上下文从这里带进去）
-        if name in ("open_app", "open_url", "close_app"):
+        # T22：打开/关闭/输入类工具需要本任务的开窗记录（T30：type_text 用它
+        # 锚定粘贴目标窗口）。记录表经 args 搭载、在 TOOL_FUNCTIONS 入口
+        # lambda 里 pop 取走——审计与结果回调看到的参数保持干净
+        # （同 wait 特判：函数表无 self，上下文从这里带进去）
+        if name in ("open_app", "open_url", "close_app", "type_text"):
             args["_agent_opened"] = self._agent_opened
+        # T30：open_app 动作前快照全部可见窗口（hwnd+标题），供动作后校验做
+        # 差集——只有"新出现的窗口"才算打开成功，用户已开的同名窗口不算数
+        open_pre_windows = None
+        if name == "open_app":
+            try:
+                open_pre_windows = core_verify.snapshot_windows()
+            except Exception:
+                open_pre_windows = None
         retryable = risk != "high" and guard.is_retryable(name)
 
         # click 前截图供"动作后校验"做界面变化对比；同时采集 UIA 点击目标：
@@ -1568,7 +1668,8 @@ class DesktopAgent:
         # 动作后校验（仅首次即成功的关键动作；重试路径已含在失败判定里）。
         # 关键点击已在重试环内强校验过，这里跳过避免重复校验
         if final_ok and attempts >= 1 and not critical:
-            ok, detail = self._verify_action(name, args, result, before_img)
+            ok, detail = self._verify_action(name, args, result, before_img,
+                                             open_pre_windows)
             if ok is not None:
                 if self.auditor:
                     self.auditor.emit("verify", tool=name, ok=ok, detail=detail)
@@ -1591,11 +1692,14 @@ class DesktopAgent:
             except Exception:
                 pass
 
-    def _verify_action(self, name: str, args: dict, result: str, before_img):
-        """按工具类型做动作后校验；返回 (ok|None, detail)，None 表示无校验手段"""
+    def _verify_action(self, name: str, args: dict, result: str, before_img,
+                       open_pre_windows=None):
+        """按工具类型做动作后校验；返回 (ok|None, detail)，None 表示无校验手段。
+        open_pre_windows：open_app 动作前的窗口快照（T30 差集校验用）"""
         try:
             if name == "open_app" and not str(result).startswith("错误"):
-                return core_verify.verify_open_app(args.get("app_name", ""))
+                return core_verify.verify_open_app(args.get("app_name", ""),
+                                                   pre_windows=open_pre_windows)
             if name == "click" and before_img is not None:
                 return core_verify.verify_click(before_img)
             if name == "clipboard_write" and not str(result).startswith("错误"):
