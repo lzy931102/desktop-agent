@@ -1092,11 +1092,13 @@ def _notepad_session_guard(entry) -> str:
                      if h not in before and _window_alive(h)]
             if fresh:
                 entry["hwnd"] = fresh[0]
+                entry["new_blank_tab"] = True   # T33b：输入将落在本任务新建的空白处
                 if was_restored:
                     return ("记事本恢复了上次未保存的文档，已另开空白新窗口"
                             "输入，原窗口未动")
                 return ""
             if not _window_title(hwnd).startswith("*"):
+                entry["new_blank_tab"] = True   # T33b：同上（同窗口新标签）
                 if was_restored:
                     return ("记事本恢复了上次未保存的文档，已新建空白标签，"
                             "原标签未动")
@@ -1791,6 +1793,7 @@ def _type_text_tool(args: dict) -> str:
     # T31 兜底拒粘：锚定的是记事本且激活标签带 * = 上次未保存的文档
     # （open_app 防护失败/用户中途切回旧标签的死角）。不给「自己 Ctrl+N」
     # 的引导——新窗口 hwnd 不在 T22 记录里，会造成锚定死循环
+    tab_note = ""
     if target:
         entry = next((e for e in (record or [])
                       if e.get("type") == "app" and e.get("hwnd") == target), None)
@@ -1799,6 +1802,11 @@ def _type_text_tool(args: dict) -> str:
             return ("错误: 记事本当前显示的是上次未保存的文档，为避免把内容"
                     "写进旧文档已拒绝输入——请如实告知用户，由用户手动新建"
                     "标签页或决定是否保存")
+        # T33b：T32 防护新建过空白标签时，回显注明去向——窗口标题区分
+        # 不了"新标签"和"旧文档"（两者粘完都叫「*你好 - Notepad」），
+        # 用户曾因此误判"还是一样"（2026-10-05 复测实录）
+        if entry and entry.get("new_blank_tab"):
+            tab_note = "（本任务新建的空白标签）"
     refused = _type_text_with_space(args["text"], args.get("interval", 0.05),
                                     target_hwnd=target)
     if refused:
@@ -1807,7 +1815,7 @@ def _type_text_tool(args: dict) -> str:
         echo = f"typed: {args['text']}（共 {len(args['text'])} 字符，已完整输入）"
     else:
         echo = f"已完整输入 {len(args['text'])} 字符（长文本不回显全文）"
-    return f"{echo} → 已输入到「{_foreground_title() or '未知窗口'}」"
+    return f"{echo} → 已输入到「{_foreground_title() or '未知窗口'}」{tab_note}"
 
 
 TOOL_FUNCTIONS = {

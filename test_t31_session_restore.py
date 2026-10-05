@@ -249,3 +249,62 @@ def test_type_text_star_guard_only_for_notepad(monkeypatch):
         {"text": "你好", "_agent_opened": record})
     assert "已完整输入" in out
     assert clip == ["你好"]
+
+
+# ==================== 4. T33b 回显标注：区分新建标签与旧文档 ====================
+# 背景（2026-10-05 复测实录）：T32 之后输入落在新建空白标签，粘完标题也是
+# 「*你好 - Notepad」——与"粘进旧文档"的回显文本相同，用户误判"还是一样"。
+
+def test_type_text_echo_annotates_new_tab_after_guard(monkeypatch):
+    """恢复场景全流程：guard 新建空白标签后，回显带「（本任务新建的空白标签）」"""
+    _mock_restore_scene(monkeypatch, after_hotkey=["clean_same", "skip"])
+    out, record = _open_notepad()
+    assert record[0].get("new_blank_tab") is True       # guard 打的标记
+    monkeypatch.setattr(agent_loop, "_ensure_foreground",
+                        lambda h, poll_seconds=2.0: (True, "x"))
+    monkeypatch.setattr(agent_loop, "_foreground_title",
+                        lambda: "*你好 - Notepad")
+    import pyperclip
+    clip = []
+    monkeypatch.setattr(pyperclip, "copy", lambda t: clip.append(t))
+    out2 = agent_loop.TOOL_FUNCTIONS["type_text"](
+        {"text": "你好", "_agent_opened": record})
+    assert "已输入到「*你好 - Notepad」（本任务新建的空白标签）" in out2
+
+
+def test_type_text_echo_annotates_new_tab_clean_open(monkeypatch):
+    """干净标题场景（也无条件新建）：回显同样带标注"""
+    _fake_startfile(monkeypatch)
+    monkeypatch.setattr(agent_loop, "_capture_app_window", lambda *a, **k: 0x1111)
+    monkeypatch.setattr(agent_loop, "_window_alive", lambda h: True)
+    monkeypatch.setattr(agent_loop, "_window_title", lambda h: "无标题 - Notepad")
+    monkeypatch.setattr(agent_loop, "_window_process_exe", lambda h: "notepad.exe")
+    monkeypatch.setattr(agent_loop, "_ensure_foreground",
+                        lambda h, poll_seconds=2.0: (True, "无标题 - Notepad"))
+    monkeypatch.setattr(agent_loop.pyautogui, "click", lambda *a, **kw: None)
+    monkeypatch.setattr(agent_loop.pyautogui, "hotkey", lambda *k, **kw: None)
+    monkeypatch.setattr(agent_loop, "_foreground_title",
+                        lambda: "*你好 - Notepad")
+    import pyperclip
+    monkeypatch.setattr(pyperclip, "copy", lambda t: None)
+    out, record = _open_notepad()
+    assert record[0].get("new_blank_tab") is True
+    out2 = agent_loop.TOOL_FUNCTIONS["type_text"](
+        {"text": "你好", "_agent_opened": record})
+    assert "（本任务新建的空白标签）" in out2
+
+
+def test_type_text_echo_no_annotation_without_flag(monkeypatch):
+    """无 new_blank_tab 标记（非防护流程/旧记录）：回显保持原样（回归保护）"""
+    hot, clip, typed = _type_env(monkeypatch, 0x1111, "无标题 - Notepad")
+    monkeypatch.setattr(agent_loop, "_ensure_foreground",
+                        lambda h, poll_seconds=2.0: (True, "无标题 - Notepad"))
+    monkeypatch.setattr(agent_loop, "_foreground_title",
+                        lambda: "无标题 - Notepad")
+    record = [{"type": "app", "name": "notepad", "exe": "notepad.exe",
+               "hwnd": 0x1111, "reason": "临时工具", "purpose": "x",
+               "opened_at": 0.0}]
+    out = agent_loop.TOOL_FUNCTIONS["type_text"](
+        {"text": "你好", "_agent_opened": record})
+    assert "已完整输入" in out
+    assert "本任务新建的空白标签" not in out
