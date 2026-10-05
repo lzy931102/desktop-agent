@@ -605,12 +605,20 @@ TOOLS_SCHEMA = [
         "type": "function",
         "function": {
             "name": "close_app",
-            "description": "关闭本任务此前用 open_app 打开的应用窗口（仅限 记事本/计算器/画图/截图工具）。任务收尾时把「临时工具」类窗口关掉；用户自己开的窗口关不了也不该关；浏览器等结果载体不适用",
+            "description": ("关闭本任务此前用 open_app 打开的应用窗口（仅限 "
+                            "记事本/计算器/画图/截图工具）。任务收尾时把「临时工具」"
+                            "类窗口关掉；用户自己开的窗口关不了也不该关；浏览器等"
+                            "结果载体不适用。软件弹「是否保存」对话框时按 unsaved "
+                            "参数处理"),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "app_name": {"type": "string", "description": "应用名，如 calc（优先用这个）"},
-                    "hwnd": {"type": "integer", "description": "窗口句柄，比 app_name 更精确（open_app 打开时已自动记录）"}
+                    "hwnd": {"type": "integer", "description": "窗口句柄，比 app_name 更精确（open_app 打开时已自动记录）"},
+                    "unsaved": {"type": "string", "enum": ["save", "discard", "cancel"],
+                                "description": ("关闭时弹出「是否保存」对话框的处理：任务要求保存内容"
+                                                "=save；任务没要求保存（内容是临时的，如输入后关闭）"
+                                                "=discard；拿不准=cancel（窗口保留并提醒用户手动处理，默认）")}
                 }
             }
         }
@@ -1146,6 +1154,167 @@ def _close_window(hwnd) -> None:
     user32.SendMessageTimeoutW(hwnd, 0x0010, 0, 0, 0x0002, 3000, None)
 
 
+# ==================== T25「未保存」对话框识别 ====================
+# 背景（2026-10-04 用户实测）：记事本输入"你好"后收尾 close_app，WM_CLOSE
+# 弹出「是否保存」确认框，模型不认识，反复尝试关闭空转 59 秒。识别走两条
+# 路：经典 Win32 对话框（记事本/画图旧版）是主窗口 owned 的顶层 #32770，
+# ctypes 毫秒级；Win11 商店版记事本确认框是窗口内 XAML 内容对话框，顶层
+# 枚举看不到，只能 UIA（pywinauto，1~2 秒）。先快后慢。
+
+
+def _classify_button_text(text) -> str:
+    """按钮文本 → save/discard/cancel；认不出返回 None。
+
+    中西文与助记符变体都收（Win32 经典对话框是「保存(S)/不保存(N)」，
+    英文系统是 Save/Don't Save）；「不保存」必须先于「保存」判断，
+    否则子串误命中。
+    """
+    t = str(text or "").strip().replace(" ", "").replace("&", "").lower()
+    if not t:
+        return None
+    if t.startswith("不保存") or "don'tsave" in t or "dontsave" in t:
+        return "discard"
+    if t.startswith("保存") or t == "save":
+        return "save"
+    if t.startswith("取消") or t == "cancel":
+        return "cancel"
+    return None
+
+
+def _owned_dialog_hwnds(owner_hwnd) -> list:
+    """owner 窗口的属主弹窗（保存确认框是主窗口 owned 的顶层窗口）"""
+    if os.name != "nt" or not owner_hwnd:
+        return []
+    try:
+        import ctypes
+        from ctypes import wintypes
+        user32 = ctypes.windll.user32
+    except Exception:
+        return []
+    out = []
+
+    @ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)
+    def cb(hwnd, _l):
+        # GW_OWNER=4：只认属于主窗口的弹窗，别人的对话框绝不碰
+        if user32.IsWindowVisible(hwnd) and user32.GetWindow(hwnd, 4) == owner_hwnd:
+            out.append(hwnd)
+        return True
+
+    user32.EnumWindows(cb, 0)
+    return out
+
+
+def _child_buttons(dlg_hwnd) -> list:
+    """对话框内的按钮 [(hwnd, 文本)]（只认 Button 类子窗口）"""
+    if os.name != "nt" or not dlg_hwnd:
+        return []
+    try:
+        import ctypes
+        from ctypes import wintypes
+        user32 = ctypes.windll.user32
+    except Exception:
+        return []
+    out = []
+
+    @ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)
+    def cb(hwnd, _l):
+        buf = ctypes.create_unicode_buffer(256)
+        user32.GetClassNameW(hwnd, buf, 256)
+        if buf.value == "Button":
+            n = user32.GetWindowTextLengthW(hwnd)
+            b = (ctypes.create_unicode_buffer(n + 1) if n > 0
+                 else ctypes.create_unicode_buffer(2))
+            user32.GetWindowTextW(hwnd, b, n + 1)
+            out.append((hwnd, b.value))
+        return True
+
+    user32.EnumChildWindows(dlg_hwnd, cb, 0)
+    return out
+
+
+def _bm_click(button_hwnd) -> None:
+    """给 Win32 按钮发 BM_CLICK（PostMessage 异步，不动鼠标不抢焦点）"""
+    import ctypes
+    ctypes.windll.user32.PostMessageW(button_hwnd, 0x00F5, 0, 0)  # BM_CLICK
+
+
+def _owned_dialog_buttons(owner_hwnd) -> dict:
+    """在主窗口的属主对话框里找「保存/不保存/取消」按钮（Win32 路线）。
+
+    认定条件：保存/不保存至少命中一个——只有「取消」的对话框（查找、
+    字体等）不认，避免把无关弹窗当保存确认误点取消。
+    返回 {choice: 点击器}；不是保存确认返回 {}。
+    """
+    out = {}
+    for dlg in _owned_dialog_hwnds(owner_hwnd):
+        for hwnd, text in _child_buttons(dlg):
+            choice = _classify_button_text(text)
+            if choice and choice not in out:
+                out[choice] = (lambda bh=hwnd: _bm_click(bh))
+    if "save" not in out and "discard" not in out:
+        return {}
+    return out
+
+
+def _pywinauto_window_buttons(owner_hwnd) -> list:
+    """主窗口 UIA 树里的可见 Button（Win11 商店版记事本的保存确认是
+    窗口内 XAML 内容对话框，不是顶层窗口，Win32 枚举看不到）"""
+    try:
+        from pywinauto import Desktop
+    except ImportError:
+        return []
+    try:
+        win = Desktop(backend="uia").window(handle=owner_hwnd)
+        out = []
+        for c in win.descendants(control_type="Button"):
+            try:
+                r = c.rectangle()
+                if r.width() > 0 and r.height() > 0:
+                    out.append(c)
+            except Exception:
+                continue
+        return out
+    except Exception:
+        return []
+
+
+def _save_dialog_buttons_uia(owner_hwnd) -> dict:
+    """UIA 路线找保存确认按钮：按文本分类，点击走 Invoke（不动鼠标），
+    Invoke 不支持时降级 click_input。认定条件同 Win32 路线。"""
+    out = {}
+    for c in _pywinauto_window_buttons(owner_hwnd):
+        try:
+            choice = _classify_button_text(c.window_text())
+        except Exception:
+            continue
+        if choice and choice not in out:
+            def _click(w=c):
+                try:
+                    w.invoke()
+                except Exception:
+                    w.click_input()
+            out[choice] = _click
+    if "save" not in out and "discard" not in out:
+        return {}
+    return out
+
+
+def _find_save_dialog_buttons(owner_hwnd) -> dict:
+    """识别「是否保存」确认框：先 Win32 顶层属主对话框（毫秒级），
+    没有再走 UIA（1~2 秒）。没有确认框返回 {}。"""
+    out = _owned_dialog_buttons(owner_hwnd)
+    if out:
+        return out
+    return _save_dialog_buttons_uia(owner_hwnd)
+
+
+def _norm_unsaved(value) -> str:
+    """unsaved 参数归一：save/discard/cancel 三值，缺失或非法一律 cancel
+    （不确定该不该存就交给用户——同 T22 unknown 保守保留的哲学）"""
+    v = str(value or "").strip().lower()
+    return v if v in ("save", "discard", "cancel") else "cancel"
+
+
 def _close_app(args, record=None):
     """关闭本任务此前用 open_app 打开的应用窗口（T22 任务收尾用）。
 
@@ -1157,6 +1326,12 @@ def _close_app(args, record=None):
       确定性失败标记（core/retry.NON_RETRYABLE_MARKERS），不烧退避
     - hwnd 优先（精确），hwnd 不在记录同样拒绝；关前复核窗口身份
       （进程 exe 或标题词），hwnd 被系统复用给别的窗口时拒绝关闭
+
+    T25「未保存」对话框（2026-10-04 实测空转 59 秒的修复）：WM_CLOSE 后
+    窗口仍在 = 大概率弹了「是否保存」确认。等 1 秒识别对话框，按 unsaved
+    参数点 保存/不保存；拿不准点「取消」收起提示、窗口保留交用户。同一
+    窗口 2 次结束时仍未关闭 → 永久放弃，连 WM_CLOSE 都不再发——模型只剩
+    如实汇报一条路，把空转变成一句话。
     """
     hwnd_arg = args.get("hwnd")
     name = str(args.get("app_name", "") or "").strip()
@@ -1202,16 +1377,61 @@ def _close_app(args, record=None):
             w.lower() in title.lower() for w in hints):
         return ("错误: 找不到窗口——记录的 " + str(entry.get("name"))
                 + " 窗口已被其他窗口取代，为避免误关不执行，请如实告知用户")
+    # T25 防空转：该窗口此前已 2 次没关掉，永久放弃（连 WM_CLOSE 都不发）
+    fails_before = int(entry.get("close_fails", 0))
+    if fails_before >= 2:
+        return (f"错误: {entry.get('name')} 窗口此前已 2 次尝试关闭均未成功，"
+                "已停止自动关闭——请在汇报里如实告知用户该窗口需要手动处理，"
+                "不要再尝试关闭")
     _close_window(hwnd)
     # UWP 应用收到 WM_CLOSE 后退场要一两秒，轮询确认而不是只等固定一拍
     deadline = time.time() + 3.0
     while _window_alive(hwnd) and time.time() < deadline:
         time.sleep(0.5)
-    if _window_alive(hwnd):
-        return (f"已向 {entry.get('name')} 发送关闭请求，但窗口仍在"
-                "（可能在等保存确认），请在汇报里提醒用户手动确认")
-    mark = entry.get("purpose") or "临时工具"
-    return f"已关闭 {entry.get('name')}（{mark}）"
+    if not _window_alive(hwnd):
+        mark = entry.get("purpose") or "临时工具"
+        return f"已关闭 {entry.get('name')}（{mark}）"
+
+    # T25：窗口收到 WM_CLOSE 仍活着，很可能弹了「是否保存」确认。
+    # 等 1 秒让对话框完全弹出再识别
+    time.sleep(1.0)
+    buttons = _find_save_dialog_buttons(hwnd)
+    if buttons:
+        choice = _norm_unsaved(args.get("unsaved"))
+        click = buttons.get(choice)
+        if choice in ("save", "discard") and click is not None:
+            click()
+            word = "保存" if choice == "save" else "不保存"
+            deadline = time.time() + 3.0
+            while _window_alive(hwnd) and time.time() < deadline:
+                time.sleep(0.5)
+            if not _window_alive(hwnd):
+                mark = entry.get("purpose") or "临时工具"
+                return f"已点「{word}」并关闭 {entry.get('name')}（{mark}）"
+            extra = ("（无标题文件的保存会先弹另存为，需人工填文件名）"
+                     if choice == "save" else "")
+            note = f"已点「{word}」但窗口仍未关闭{extra}"
+        else:
+            # 不确定该不该存（或模型没传）：点「取消」把提示收起
+            # （不把对话框挂着挡屏幕），窗口原样保留交用户决定
+            if buttons.get("cancel"):
+                buttons["cancel"]()
+            note = ("软件询问是否保存，已点「取消」收起提示，窗口保留"
+                    "——内容是否保存需用户手动处理")
+            if fails_before == 0:
+                return note  # 首次取消：交用户决策，不是失败，不烧失败感
+    else:
+        note = "已发送关闭请求，但窗口仍在（可能在等保存确认）"
+
+    # 走到这里 = 本次结束时窗口仍未关闭：计数，达 2 次永久放弃
+    fails = fails_before + 1
+    entry["close_fails"] = fails
+    if fails >= 2:
+        return (f"错误: {entry.get('name')} 窗口 2 次尝试关闭均未成功，已停止"
+                "自动关闭——请如实告知用户该窗口需要手动处理，不要再尝试关闭")
+    if buttons:
+        return f"错误: {note}（第 {fails} 次未关闭，可再试 1 次）"
+    return f"错误: {note}，请提醒用户手动确认（第 {fails} 次未关闭）"
 
 
 # 新建文件夹放行根目录（T18）：只允许在用户目录下创建。空文件夹本身无破坏性
@@ -1398,8 +1618,9 @@ SYSTEM_PROMPT = """你是一个电脑操作助手，通过工具帮用户完成�
   不接受文件）。reason/purpose 同 open_app，每次必须带。
   「打开浏览器/访问某网页」「打开/整理某个文件夹」类任务一律先用它，
   一步到位不用再敲开始菜单或手动导航
-- close_app(app_name): 关闭本任务自己用 open_app 打开的窗口（仅限记事本/计算器/画图/截图工具）。
-  任务收尾时关「临时工具」用它；用户自己开的窗口关不了也不该关
+- close_app(app_name, unsaved): 关闭本任务自己用 open_app 打开的窗口（仅限记事本/计算器/画图/截图工具）。
+  任务收尾时关「临时工具」用它；用户自己开的窗口关不了也不该关；
+  遇「是否保存」对话框按 unsaved 选 save/discard/cancel（规则见下方）
 - create_folder(path): 在用户目录下新建文件夹（一次可建多级，已存在不算错误）。
   「整理文件/建分类文件夹」类任务先用它把要用的目标文件夹建好，
   不要在资源管理器里手动右键新建
@@ -1457,6 +1678,18 @@ SYSTEM_PROMPT = """你是一个电脑操作助手，通过工具帮用户完成�
    - reason="结果载体" → 保留
    - reason="unknown" → 保留，并在最终回复里提示"我打开了 XX，你可以手动关闭"
 3. 关闭软件只能用 close_app 工具，禁止用 alt+F4 等快捷键去关
+
+【关闭软件遇「是否保存」对话框（重要）】
+close_app 关闭时软件可能弹出「是否保存」对话框，工具会按你传的 unsaved
+参数处理，按任务上下文选：
+- 任务里用户明确要求保存内容 → unsaved="save"
+- 任务没要求保存（内容是临时的，如"输入你好"后关闭）→ unsaved="discard"
+- 拿不准内容是不是用户在意的 → unsaved="cancel"（默认；窗口保留，
+  你要在最终汇报里提醒用户手动处理）
+关闭同一个窗口最多试 2 次：2 次都没关掉就停止，如实告诉用户"窗口没关掉，
+需要手动处理"，不要再换方法反复尝试关闭。
+任务完成的标准是"用户要求的事做到了"，不是"所有窗口都关了"——
+窗口没关掉不影响任务本身完成时，如实说明即可。
 
 安全规则：
 1. 不要执行任何危险或破坏性操作（删除文件、关闭系统、修改系统设置等）
