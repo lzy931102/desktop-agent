@@ -1030,7 +1030,65 @@ def _open_app(args, record=None):
             "purpose": str(args.get("purpose", "") or ""),
             "hwnd": _capture_app_window(exe, pre), "opened_at": time.time(),
         })
-    return f"opened {app_name}"
+        # T31：记事本会话恢复防护（详见 _notepad_session_guard）
+        note = _notepad_session_guard(record[-1])
+    else:
+        note = ""
+    return f"opened {app_name}" + (f"（{note}）" if note else "")
+
+
+def _notepad_session_guard(entry) -> str:
+    """T31 记事本会话恢复防护：open_app 刚开的记事本若激活的是「上次
+    未保存的会话标签」（Win11 记事本恢复会话，标题带 * 前缀），输入会
+    直接写进用户的旧文档（2026-10-05 exe 验收实测：用户文档被叠进
+    3 份"你好"——audit 回显「*你好你好你好 - Notepad」）。自动
+    Ctrl+N / Ctrl+Shift+N 另开干净窗口（Win11 记事本两种新建快捷键，
+    探针环境过不了前台锁，真实生效形态由手动验证兜底），把 T22 锚定
+    换过去；用户的原窗口绝不动。返回追加到 open_app 结果的说明。"""
+    exe = entry.get("exe", "")
+    hwnd = int(entry.get("hwnd") or 0)
+    if exe != "notepad.exe" or not hwnd:
+        return ""
+    if not _window_title(hwnd).startswith("*"):
+        return ""  # 干净的新窗口/标签，无需防护
+    try:
+        import ctypes
+        from ctypes import wintypes
+        u32 = ctypes.windll.user32
+        # click 编辑区激活窗口（startfile 不抢前台；鼠标点击激活不受
+        # 前台锁限制）。置顶再点防遮挡截走（docs/踩坑.md #5），点完取消
+        rect = wintypes.RECT()
+        u32.GetWindowRect(hwnd, ctypes.byref(rect))
+        cx = rect.left + (rect.right - rect.left) // 2
+        cy = rect.top + int((rect.bottom - rect.top) * 0.6)
+        u32.SetWindowPos(hwnd, -1, 0, 0, 0, 0, 0x0053)   # HWND_TOPMOST
+        try:
+            pyautogui.click(cx, cy)
+            time.sleep(0.4)
+            ok, _fg = _ensure_foreground(hwnd)
+        finally:
+            u32.SetWindowPos(hwnd, -2, 0, 0, 0, 0, 0x0053)  # HWND_NOTOPMOST
+        if not ok:
+            return ("记事本恢复了上次未保存的文档，但未能把窗口切到前台——"
+                    "请提醒用户手动新建空白标签页，不要向当前文档输入")
+        before = set(_candidate_windows(exe))
+        for keys in (("ctrl", "n"), ("ctrl", "shift", "n")):
+            pyautogui.hotkey(*keys)
+            time.sleep(1.0)
+            fresh = [h for h in _candidate_windows(exe)
+                     if h not in before and _window_alive(h)]
+            if fresh:
+                entry["hwnd"] = fresh[0]
+                return ("记事本恢复了上次未保存的文档，已另开空白新窗口输入，"
+                        "原窗口未动")
+            if not _window_title(hwnd).startswith("*"):
+                return ("记事本恢复了上次未保存的文档，已新建空白标签，"
+                        "原标签未动")
+        return ("记事本恢复了上次未保存的文档，未能另开空白窗口——"
+                "请提醒用户手动处理，不要向当前文档输入")
+    except Exception:
+        return ("记事本恢复了上次未保存的文档，但自动另开空白窗口失败——"
+                "请提醒用户手动处理，不要向当前文档输入")
 
 
 def _open_url(args, record=None):
@@ -1697,7 +1755,19 @@ def _type_text_tool(args: dict) -> str:
     同样报出接收窗口——输入去向始终可见，模型粘错目标能当场发现。
     这是**有意保留的回退**而非遗漏：开始菜单敲字流程没有可锚定的窗口，
     拒粘会把它弄坏（残余限制已记 docs/踩坑.md #9）。"""
-    target = _latest_app_hwnd(args.pop("_agent_opened", None))
+    record = args.pop("_agent_opened", None)
+    target = _latest_app_hwnd(record)
+    # T31 兜底拒粘：锚定的是记事本且激活标签带 * = 上次未保存的文档
+    # （open_app 防护失败/用户中途切回旧标签的死角）。不给「自己 Ctrl+N」
+    # 的引导——新窗口 hwnd 不在 T22 记录里，会造成锚定死循环
+    if target:
+        entry = next((e for e in (record or [])
+                      if e.get("type") == "app" and e.get("hwnd") == target), None)
+        if (entry and entry.get("exe") == "notepad.exe"
+                and _window_title(target).startswith("*")):
+            return ("错误: 记事本当前显示的是上次未保存的文档，为避免把内容"
+                    "写进旧文档已拒绝输入——请如实告知用户，由用户手动新建"
+                    "标签页或决定是否保存")
     refused = _type_text_with_space(args["text"], args.get("interval", 0.05),
                                     target_hwnd=target)
     if refused:
