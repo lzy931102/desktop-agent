@@ -2,7 +2,7 @@
 # T4 Phase 1 纯搬运，零内容变更；gui.py 经兼容层再导出这些名字。
 
 # 版本号：显示在窗口标题栏，方便用户与 GitHub Releases 对照（避免旧版新版分不清）
-APP_VERSION = "2.0.15"
+APP_VERSION = "2.0.16"
 
 OLLAMA_URL = "http://localhost:11434"
 MODEL_NAME = "qwen2.5-coder:7b"
